@@ -1,0 +1,62 @@
+{
+  "name": "@zakkster/lite-bake",
+  "version": "1.0.1",
+  "description": "Compile JSON arrays into flat interleaved binary for zero-GC, L1-cache-friendly reads. Stop parsing JSON in your game loop.",
+  "type": "module",
+  "main": "./src/index.js",
+  "module": "./src/index.js",
+  "types": "./types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "types",
+    "README.md",
+    "llms.txt",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test ./test/test.js",
+    "test:watch": "node --test --watch ./test/test.js",
+    "bench": "node ./benchmark/bench.js",
+    "example": "node examples/basic.js",
+    "bundle-check": "npx esbuild src/index.js --bundle --format=esm --outfile=test-bundle.js"
+  },
+  "keywords": [
+    "json",
+    "binary",
+    "flat",
+    "typed-array",
+    "zero-gc",
+    "zero-allocation",
+    "data-oriented",
+    "dod",
+    "game",
+    "gamedev",
+    "performance",
+    "cache-locality",
+    "struct-of-arrays",
+    "array-of-structs",
+    "tilemap",
+    "webgl"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
+  "homepage": "https://github.com/PeshoVurtoleta/lite-bake#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PeshoVurtoleta/lite-bake.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PeshoVurtoleta/lite-bake/issues",
+    "email": "shinikchiev@yahoo.com"
+  },
+  "sideEffects": false
+}
