@@ -161,7 +161,7 @@ Records are laid out back-to-back at a known byte offset. Reading record `i+1` i
 | All integers, `-32768..32767` | `I16` | 2 |
 | All integers, `-2³¹..2³¹-1` | `I32` | 4 |
 | Any fractional value (`1.5`, `-0.25`, ...) | `F32` | 4 |
-| Non-number (string, null, mixed) | `F32` (stored as `0`) | 4 |
+| Non-number (string, `null`, boolean, mixed) | refused: `E_NON_NUMERIC` by default; `coerce: 'zero'` stores `0` in an `F32` lane | 4 |
 
 **When to override:**
 - Pixel-accurate coordinates you don't want snapped to int → force `F32`.
@@ -222,10 +222,33 @@ Compiles an array of records into a flat binary.
 
 | Option | Type | Default | Notes |
 |---|---|---|---|
-| `opts.schema` | `{ [field]: Types.X }` | `{}` | Override inferred types. Partial allowed. |
-| `opts.validate` | `boolean` | `false` | Dev only: throws if records don't all have the same keys. |
+| `opts.schema` | `{ [field]: Types.X }` | `{}` | Override inferred types. Partial allowed. Codes outside `0..7` throw `E_BAD_TYPE`; a field not in the records throws `E_UNKNOWN_FIELD`. |
+| `opts.validate` | `boolean` | `false` | Explicit synonym of the strict default (same shape + value checks). Conflicts with `coerce` (`E_OPTION_CONFLICT`). |
+| `opts.coerce` | `'zero'` | (unset) | Restore 1.0.x leniency: non-numbers and absent fields store `0`, extra fields drop. Numbers are never coerced, so `NaN`/`-0`/`Infinity` survive in float lanes. |
 
-Returns `{ buffer, stride, count, schema }`.
+An unknown option key throws `E_UNKNOWN_OPTION` with a did-you-mean hint (never a silent ignore).
+
+Returns `{ buffer, stride, count, schema }`. Every refusal is a `LiteBakeError` carrying a stable `.code`.
+
+### Error codes
+
+Every door throws a `LiteBakeError` (an `Error` subclass) with a `.code`. Catch by code, not by message.
+
+| Code | When |
+|---|---|
+| `E_INPUT` | `records` is not a non-empty array |
+| `E_NOT_A_RECORD` | a record is not a non-null, non-array object |
+| `E_EMPTY_RECORD` | record 0 has zero own keys |
+| `E_NON_NUMERIC` | a field value is not a number (strict mode) |
+| `E_MISSING_FIELD` | a record is missing a field record 0 declares |
+| `E_UNEXPECTED_FIELD` | a record carries a field record 0 does not declare |
+| `E_UNKNOWN_OPTION` | `opts` has a key other than `schema`/`validate`/`coerce` |
+| `E_OPTION_VALUE` | an `opts` value is out of its domain |
+| `E_OPTION_CONFLICT` | `validate: true` and `coerce: 'zero'` both set |
+| `E_UNKNOWN_FIELD` | `schema` override names a field not in the records |
+| `E_BAD_TYPE` | `schema` override value is not a Types code `0..7` |
+| `R_UNKNOWN_FIELD` | Reader asked for a field the schema does not have |
+| `R_WRONG_TYPE` | Reader asked for a field under the wrong lane width |
 
 ### `new Reader(baked)`
 
@@ -264,13 +287,13 @@ So that `new Float64Array(baked.buffer)` always works, even when no field is an 
 
 `bake()` walks all records once to determine the smallest fitting type. O(records × fields). For 100k records, this is single-digit milliseconds. If you already know the types and want to skip inference entirely, pass a full `opts.schema`.
 
-### Null / undefined / missing fields become `0`
+### Null / undefined / missing / extra fields are refused by default (since 1.1.0)
 
-No warning, no throw — **unless** you pass `{ validate: true }`, in which case missing/extra keys throw at bake time. Use `validate: true` in development, drop it in production.
+`bake()` is strict by default. `null`, `undefined`, a missing field, or an extra field all throw a coded `LiteBakeError` (`E_NON_NUMERIC`, `E_MISSING_FIELD`, `E_UNEXPECTED_FIELD`) naming the record index and field. `null` is not zero. To restore the 1.0.x zero-fill and extra-drop behavior, pass `{ coerce: 'zero' }` -- absent/non-number values then store `0` and extra fields drop. `{ validate: true }` is an explicit synonym of the strict default (it now also checks values, not just key sets).
 
-### Strings are silently ignored
+### Strings are refused by default (since 1.1.0)
 
-A string-valued field is treated as non-numeric → stored as `F32` zeros. If you need string tables, that's on the v1.1 roadmap.
+A string-valued field is non-numeric, so it throws `E_NON_NUMERIC` by default. Under `{ coerce: 'zero' }` it stores an `F32` `0` (never the old `+v` coercion -- `'42.5'` does not become `42.5`). If you need string tables, that's on the roadmap.
 
 ### Native endianness is used throughout
 
@@ -324,7 +347,7 @@ Measured on Node 22, 50,000 records (random x/y/type/hp), 100 loop passes per tr
 npm test
 ```
 
-Uses Node's built-in `node:test` runner. Zero dependencies. 36 tests covering 8 categories. Should complete in under a second.
+Uses Node's built-in `node:test` runner. Zero dependencies. 63 tests covering input validation, type inference, round-trip correctness, layout/alignment, schema overrides, the strict-default write-side doors (`test/Doors.test.js`), Reader helpers, and integration. Should complete in under a second.
 
 ### What the tests cover
 

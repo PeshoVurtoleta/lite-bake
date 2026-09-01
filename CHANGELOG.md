@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file. This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] -- 2026-09-01
+
+B1 -- the write-side doors: nothing on the write path accepts what it cannot store faithfully. `bake()` is now strict by default; every refusal is a `LiteBakeError` carrying a stable `code`. The full suite is 63 unit tests (36 in `Bake.test.js`, migrated from message-regex to `e.code` equality; 27 new door tests in `Doors.test.js`) plus the ten-tier torture gate, which prints exactly `ok` (t5 goes live as a seeded differential fuzz vs the decisions/0001 oracle, t1/t4 promote their B1 todos to enforced checks, t9 shrinks EXPECTED_TODOS to the six deferred defects and adds three controls). Bench init (50k records, warmed): 2.79 ms before -> 3.83 ms after, measured old-vs-new on one machine. That ~1 ms is the deliberate cost of the new default: strict mode now runs a per-record drift pass (one `for...in` per record) that 1.0.x's lenient default skipped. The per-value door itself is within noise -- `coerce: 'zero'` (which skips the drift pass) measures 2.85 ms -- so the increase is entirely fail-closed drift detection, not the mask replacement. The hot READ path is untouched by diff: Reader's get/row/offset bodies and the typed-array hot loop are byte-identical apart from a `code` argument added to their existing throws.
+
+### Added
+
+- `LiteBakeError extends Error` with a stable `.code` (BK-18), a module-level `raise(code, msg)`, and a top-of-file comment block documenting all 13 codes: `E_INPUT`, `E_NOT_A_RECORD`, `E_EMPTY_RECORD`, `E_NON_NUMERIC`, `E_MISSING_FIELD`, `E_UNEXPECTED_FIELD`, `E_UNKNOWN_OPTION`, `E_OPTION_VALUE`, `E_OPTION_CONFLICT`, `E_UNKNOWN_FIELD`, `E_BAD_TYPE` (write side) and `R_UNKNOWN_FIELD`, `R_WRONG_TYPE` (Reader side). Exported from `types/index.d.ts` as a `BakeErrorCode` string-literal union plus the class.
+- `coerce: 'zero'` opts flag: restores the 1.0.x leniency (non-numbers and absent fields store `0`, extra fields drop) as a documented, per-call, opt-in escape hatch. Numbers are never coerced in any mode.
+- `decisions/0001-value-policy.md`: the (lane x value-class x mode) decision record the tests execute; argues `coerce: 'zero'` and its rejected alternatives explicitly.
+- `test/Doors.test.js`: 27 tests, banner-sectioned per finding, asserting exact codes and non-vacuous clean twins (including the prototype-named-field and opts-bag doors).
+- t5 goes live: a seeded differential-fuzz tier comparing bake/Reader against a hand-written oracle over 300 iterations x 3 modes, with a BREAK canary that proves the tier can fail.
+- An inline construction-time opts validator (ported in SHAPE from lite-bake-stream's `checkOpts` + `nearestKey` + two-row Levenshtein, right-sized to the three keys; allocates only on the throw path).
+
+### Changed
+
+- Non-numeric values now throw `E_NON_NUMERIC` instead of the silent `+v || 0` coercion (which made `true` -> `1`, `'42.5'` -> `42.5`, `[7]` -> `7`); remedy: `coerce: 'zero'` for exact `0`, or `Number()` at your boundary.
+- Absent fields now throw `E_MISSING_FIELD` instead of reading back `0`; extra fields now throw `E_UNEXPECTED_FIELD` instead of dropping silently; remedy: `coerce: 'zero'` restores the record-0-keyset behavior.
+- Non-object / array / null records now throw `E_NOT_A_RECORD` (naming the index) and a zero-key record 0 throws `E_EMPTY_RECORD`, instead of baking a 0-byte buffer with a lying count.
+- `schema` override codes outside `0..7` now throw `E_BAD_TYPE` and override keys not in the records throw `E_UNKNOWN_FIELD`, instead of collapsing to a NaN-stride 0-byte container.
+- Unknown `opts` keys now throw `E_UNKNOWN_OPTION` with a did-you-mean hint instead of silently disabling the feature they misspelled; out-of-domain values throw `E_OPTION_VALUE`; `validate: true` + `coerce: 'zero'` throws `E_OPTION_CONFLICT`.
+- The old `if (opts.validate)` shape-only block is replaced by the default drift door; `validate: true` is now an explicit synonym of the strict default that also checks values.
+- The `opts` bag itself is now validated: `null`/`undefined` mean "use defaults" (`bake(recs, null)` no longer throws a raw `TypeError` at `opts.schema`), and a primitive or array opts (`bake(recs, 42)`, `bake(recs, [])`) now throws `E_OPTION_VALUE` instead of being silently accepted as an empty options object.
+- Unit tests migrated from bare message-regex `assert.throws` second arguments to `e.code` equality (message regex kept only where it adds value).
+
+### Fixed
+
+- **BK-03:** `NaN`, `-0`, `+Infinity` and `-Infinity` are preserved in float lanes. Under an explicit F64/F32 override or an inferred F32 lane, `NaN` stored `0` -> stores `NaN`; `-0` stored `+0` -> stores `-0` (Object.is exact). Numbers now write direct; `+v || 0` is gone.
+- **BK-04:** `true` in an inferred lane stored `1` -> refuses `E_NON_NUMERIC` by default and stores exact `0` under `coerce: 'zero'` (not `1`); `'42.5'` stored `42.5` -> refuses / stores `0`.
+- **BK-06:** `validate: true` with `{ v: null }` accepted (read back `0`) -> throws `E_NON_NUMERIC`.
+- **BK-07:** `schema: { v: 99 }` baked a 0-byte buffer -> throws `E_BAD_TYPE`; `schema: { v: 'F64' }` baked garbage -> throws `E_BAD_TYPE`; `schema: { ghost: ... }` silently ignored -> throws `E_UNKNOWN_FIELD`.
+- **BK-08:** `bake(recs, { shcema: ... })` silently disabled the override -> throws `E_UNKNOWN_OPTION` with `did you mean 'schema'`.
+- **BK-11:** `bake([1,2,3])` baked a 0-byte, count-3 container -> throws `E_NOT_A_RECORD`; `bake([{},{}])` -> throws `E_EMPTY_RECORD`.
+- **BK-13:** an extra field in a later record was dropped and its value lost -> throws `E_UNEXPECTED_FIELD`; a record missing a field read back `0` -> throws `E_MISSING_FIELD`; `coerce: 'zero'` restores both old behaviors on purpose.
+- **Inherited-override hole:** a record-0 field named after an `Object.prototype` member (`constructor`, `toString`, `valueOf`, `hasOwnProperty`) with no explicit override resolved its `type` to the inherited function; `BYTES[type]` was `undefined` and the write switch stored nothing -- a silently garbage-typed column. Type resolution now consults a null-prototype copy of the validated override, so such a field infers a real lane and round-trips (verified: `bake(JSON.parse('[{"constructor":1,"toString":2}]'))` reads back `1` and `2`). An explicit `{ schema: { constructor: Types.F32 } }` still applies.
+
+Not fixed, by design: integer-lane wrap (`2**32` -> `0`, BK-01) and F32 precision loss (`0.1` inferred as F32, BK-02) are untouched -- the int masks (`| 0`, `>>> 0`, `& 0xffff`, `& 0xff`) keep their exact 1.0.x semantics. Those are inference-ladder questions owned by session B3; their torture todos still reproduce at B1 exit.
+
 ## [1.0.2] -- 2026-09-01
 
 B0 -- the gate, the changelog, and the provenance the pipeline law names, where none existed. This package shipped 1.0.1 to the registry with no torture gate, no changelog, no version history, and no provable zero-GC claim; the "ZERO allocations" hot-loop promise in `src/index.js` had never been gated. This release stands up the gate on the law's canonical path (`node --expose-gc test/torture.mjs` prints exactly `ok`, exit 0/1), registers every reproduced finding as a named `todo` so B1..B4 have targets, and gives the package a diffable history. No changes to src/index.js -- runtime behavior is identical to 1.0.1 (`git diff` on `src/` is empty; the 36-test suite is byte-identical, renamed only).
