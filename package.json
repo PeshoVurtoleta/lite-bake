@@ -9,7 +9,9 @@
   "exports": {
     ".": {
       "types": "./types/index.d.ts",
-      "import": "./src/index.js"
+      "import": "./src/index.js",
+      "node": "./src/index.js",
+      "default": "./src/index.js"
     }
   },
   "files": [
