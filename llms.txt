@@ -2,13 +2,13 @@
 
 > Compile JSON arrays into flat, interleaved binary (`ArrayBuffer`) for zero-GC, L1-cache-friendly reads. Targeted at game developers and anyone with hot loops over large config data. Zero dependencies, ~3 KB minified, pure ES module.
 
-The core workflow: `bake(records)` produces an `ArrayBuffer` with one fixed-width binary row per record, type-inferred to the smallest fitting column type. `new Reader(baked)` gives you eight typed-array views (f32, f64, i32, u32, i16, u16, i8, u8) over that buffer plus type-checked `offsetXxx(name)` helpers. In the hot loop, you cache offsets and read via raw indexing: `f32[i * strideF32 + OFF_X]` — no method calls, no property lookups, no allocations, no GC pressure.
+The core workflow: `bake(records)` produces an `ArrayBuffer` with one fixed-width binary row per record, type-inferred to the smallest fitting column type. `new Reader(baked)` gives you eight typed-array views (f32, f64, i32, u32, i16, u16, i8, u8) over that buffer plus type-checked `offsetXxx(name)` helpers. In the hot loop, you cache offsets and read via raw indexing: `f32[i * strideF32 + OFF_X]` -- no method calls, no property lookups, no allocations, no GC pressure. To reconstruct a Reader from disk bytes, use `Reader.fromBytes(bytes, meta)` where `meta = { stride, count, schema }` -- it honors `byteOffset`, so pooled `readFileSync` Buffers are safe.
 
-Design principles: one allocation at load time, native endianness, stride padded to max field alignment (so F64 arithmetic is exact), buffer byte length padded to a multiple of 8 (so all typed-array views are constructible unconditionally), fields sorted by descending size to minimize internal padding. Every refusal carries a stable code on a `LiteBakeError` (`E_*` on the write side, `R_*` on the reader side); `bake()` is strict by default since 1.1.0, with `coerce: 'zero'` as the opt-in leniency escape hatch.
+Design principles: one allocation at load time, native endianness, stride padded to max field alignment (so F64 arithmetic is exact), buffer byte length padded to a multiple of 8 (so all typed-array views are constructible unconditionally), fields sorted by descending size to minimize internal padding. Every refusal carries a stable code on a `LiteBakeError` (`E_*` on the write side, `R_*` on the reader side); `bake()` is strict by default since 1.1.0, with `coerce: 'zero'` as the opt-in leniency escape hatch. Since 1.1.1 the Reader trusts nothing: `new Reader(baked)` and `Reader.fromBytes(bytes, meta)` refuse an incoherent shape with `R_INPUT` / `R_BAD_STRIDE` / `R_BAD_COUNT` / `R_BAD_LENGTH` / `R_TRUNCATED` / `R_BAD_SCHEMA`, and `get()`/`row()` refuse an out-of-range index with `R_ROW_OUT_OF_RANGE`.
 
 ## Source
 
-- [src/index.js](src/index.js): The complete library. ~250 lines. Two public exports: `bake()` and `Reader`. Plus a `Types` enum for schema overrides.
+- [src/index.js](src/index.js): The complete library. ~610 lines. Two public exports: `bake()` and `Reader` (with the static `Reader.fromBytes`). Plus a `Types` enum for schema overrides.
 - [types/index.d.ts](types/index.d.ts): TypeScript declarations.
 
 ## Docs
@@ -19,7 +19,7 @@ Design principles: one allocation at load time, native endianness, stride padded
 ## Examples and tests
 
 - [examples/basic.js](examples/basic.js): Minimal runnable example — baking a spawn-point table, reading via the canonical hot-loop pattern.
-- [test/Bake.test.js](test/Bake.test.js): 63 tests across input validation, type inference, round-trip correctness, layout/alignment, schema overrides, the strict-default write-side doors (test/Doors.test.js), Reader helpers, and integration.
+- [test/Bake.test.js](test/Bake.test.js): 95 tests across input validation, type inference, round-trip correctness, layout/alignment, schema overrides, the strict-default write-side doors (test/Doors.test.js), the Reader coherence + bounds + fromBytes doors (test/ReaderDoors.test.js, 32 tests), Reader helpers, and integration.
 - [benchmark/bench.js](benchmark/bench.js): Compares JSON-object access against baked access on 50k records. Reports init cost, memory footprint, and hot-loop throughput.
 
 ## Conceptual mapping for AI agents
