@@ -10,15 +10,17 @@
  * tiers this package needs now:
  *
  *     t0  metamorphic bake/read laws   t1  degenerate values (live -- B1)
- *     t2  layout laws over schema space t3  adversarial baked objects (stub -> B2)
- *     t4  API abuse (live -- B1)        t5  differential fuzz (live -- B1)
+ *     t2  layout laws over schema space t3  adversarial baked objects (live -- B2)
+ *     t4  API abuse (live -- B1/B2)     t5  differential fuzz (live -- B1)
  *     t6  the zero-alloc gate           t7  soak + retention witness
  *     t8  cross-package parity (stub -> B4)  t9  controls + inventory gate
  *
- * Live now: t0, t1, t2, t4, t5, t6, t7, t9. t5 is the fixed differential lane
- * plus B6's hostile-name / shape / schema-cross lanes. The remaining stubs (t3,
- * t8) and the property tiers still register the open reproduced findings as
- * `todo`s that must keep reproducing; each fills in as B2/B4 land. t8 is an inert
+ * Live now: t0, t1, t2, t3, t4, t5, t6, t7, t9. t5 is the fixed differential
+ * lane plus B6's hostile-name / shape / schema-cross lanes. t3 (B2) is the
+ * trust-nothing tier: the corrupt-baked matrix, the row-bounds policy, and the
+ * fromBytes pooled round-trip, driven in-process by t9's Controls 13-15. The one
+ * remaining stub (t8) and the property tiers still register the open reproduced
+ * findings (BK-01/BK-02) as `todo`s that must keep reproducing until B3. t8 is an inert
  * prose marker until the lite-bake-stream devDep and the XP-01/XP-02 pins arrive
  * in B4. t9 now also hosts the error-code inventory gate (Control 9): the
  * thrown (src) vs declared (d.ts) vs pinned (test scan set) censuses must agree.

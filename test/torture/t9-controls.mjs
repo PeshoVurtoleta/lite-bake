@@ -22,21 +22,19 @@ import { createLeakTracker } from '@zakkster/lite-leak';
 import { runOpsGate, checkLayout, die, todoIds } from './harness.mjs';
 import { extractThrown, extractDeclared, extractPinned, diffInventory } from './inventory.mjs';
 import { hostileOracle, shapeOracle, crossOracle } from './t5-fuzz.mjs';
+import { checkRefusal, checkBounds, checkRoundTrip } from './t3-adversarial.mjs';
 
 const NOOP = function () {};
 
 /** Retained sink so the control's allocations survive GC (arrayBuffers grows). */
 const leak = [];
 
-// After B1 the write-side todos (BK-03/04/06/07/08/11/13) are promoted to
-// enforced checks in their home tiers; only the deferred defects remain.
+// After B1 the write-side todos (BK-03/04/06/07/08/11/13) were promoted; after
+// B2 the Reader-trust todos (BK-05/09/10/12) are promoted too. Only the two
+// deferred inference-ladder defects (B3's targets) remain.
 const EXPECTED_TODOS = [
   'BK-01-int-ceiling-wrap',
   'BK-02-f32-precision-loss',
-  'BK-05-pooled-buffer-recipe',
-  'BK-09-reader-trusts-baked',
-  'BK-10-row-bounds-failopen',
-  'BK-12-stride-minimum-claim',
 ];
 
 export function run() {
@@ -246,5 +244,49 @@ export function run() {
   const cOn = crossOracle(cSchema, cCorpus, 'default', true);
   if (Object.is(cOn.values[0].g0, cCell)) {
     die('t9 control 12: breakCross did not diverge from the frounded cell (both ' + cCell + ')');
+  }
+
+  // --- Control 13: the matrix refusal checker (t3.checkRefusal). A corrupt
+  // fixture (stride 0) run with the WRONG expected code passes under breakMatrix
+  // (the knob accepts any throw) and is CAUGHT with the knob off (teeth); the
+  // correct expected code passes (non-vacuity). ---------------------------------
+  const c13Baked = bake([{ a: 1.5 }, { a: 2.5 }]);
+  const c13corrupt = () => new Reader({ ...c13Baked, stride: 0 });
+  if (checkRefusal(c13corrupt, 'R_BAD_COUNT', { breakMatrix: true }) !== null) {
+    die('t9 control 13: breakMatrix did not accept a wrong expected code (knob broken)');
+  }
+  if (checkRefusal(c13corrupt, 'R_BAD_COUNT', {}) === null) {
+    die('t9 control 13: checkRefusal accepted a wrong expected code without the knob (no teeth)');
+  }
+  if (checkRefusal(c13corrupt, 'R_BAD_STRIDE', {}) !== null) {
+    die('t9 control 13: checkRefusal rejected the correct expected code (vacuous/broken)');
+  }
+
+  // --- Control 14: the bounds checker (t3.checkBounds). A real reader passes;
+  // a fail-open mock (silent returns) is CAUGHT with the knob off (teeth) and
+  // passes under breakBounds (the knob accepts a silent out-of-range return). ---
+  const c14reader = new Reader(bake([{ a: 10 }, { a: 20 }]));
+  const c14broken = { count: 2, get() { return 0; }, row() { return {}; } };
+  if (checkBounds(c14reader, {}) !== null) {
+    die('t9 control 14: checkBounds flagged a correct bounds policy (vacuous/broken)');
+  }
+  if (checkBounds(c14broken, {}) === null) {
+    die('t9 control 14: checkBounds missed a fail-open reader (no teeth)');
+  }
+  if (checkBounds(c14broken, { breakBounds: true }) !== null) {
+    die('t9 control 14: breakBounds did not accept a silent out-of-range return (knob broken)');
+  }
+
+  // --- Control 15: fromBytes honesty (t3.checkRoundTrip). The default factory
+  // (Reader.fromBytes) passes the pooled/offset round-trip; a byteOffset-ignoring
+  // factory (new Reader({buffer: bytes.buffer, ...})) reads the junk head and is
+  // CAUGHT -- proving the gate would catch a BK-05-regressing fromBytes. --------
+  const c15broken = (bytes, meta) =>
+    new Reader({ buffer: bytes.buffer, stride: meta.stride, count: meta.count, schema: meta.schema });
+  if (checkRoundTrip() !== null) {
+    die('t9 control 15: the default fromBytes factory failed the honest round-trip (vacuous/broken)');
+  }
+  if (checkRoundTrip(c15broken) === null) {
+    die('t9 control 15: a byteOffset-ignoring factory passed the round-trip (would not catch a BK-05 regression)');
   }
 }

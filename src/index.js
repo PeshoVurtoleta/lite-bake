@@ -45,6 +45,13 @@
  *   E_BAD_TYPE        schema override value is not a Types code 0..7
  *   R_UNKNOWN_FIELD   Reader asked for a field the baked schema does not have
  *   R_WRONG_TYPE      Reader asked for a field under the wrong lane width
+ *   R_INPUT            baked/meta is not a non-null object, or buffer/bytes is not an accepted binary type
+ *   R_BAD_STRIDE       stride is not a positive integer, or is not a multiple of the schema's max lane alignment
+ *   R_BAD_COUNT        count is not a non-negative integer
+ *   R_BAD_LENGTH       buffer byteLength is not a multiple of 8
+ *   R_TRUNCATED        count rows at stride bytes do not fit in the buffer
+ *   R_BAD_SCHEMA       schema is not a non-empty array of well-formed, aligned, in-stride, non-overlapping fields
+ *   R_ROW_OUT_OF_RANGE get()/row() index is not an integer in [0, count)
  */
 export class LiteBakeError extends Error {
   constructor(code, msg) {
@@ -328,27 +335,180 @@ export function bake(records, opts = {}) {
 }
 
 export class Reader {
+  /**
+   * Coherence-door constructor -- the Reader trusts NOTHING. Every incoherent
+   * `baked` is refused with a stable R_* code BEFORE any view is constructed, so
+   * no raw RangeError can escape. Door order (first-offender; ALL doors run
+   * before ANY view construction):
+   *   (1) baked is a non-null, non-array object          -> R_INPUT
+   *   (2) baked.buffer is an ArrayBuffer                  -> R_INPUT
+   *       (a typed-array view names Reader.fromBytes)
+   *   (3) stride is a positive integer                   -> R_BAD_STRIDE
+   *   (4) count is a non-negative integer                -> R_BAD_COUNT
+   *   (5) buffer byteLength is a multiple of 8           -> R_BAD_LENGTH
+   *   (6) count rows fit (DIVISION form)                 -> R_TRUNCATED
+   *   (7) schema is well-formed, aligned, in-stride,
+   *       non-overlapping -- each entry SNAPSHOTTED       -> R_BAD_SCHEMA
+   *   (8) stride is a multiple of max field alignment     -> R_BAD_STRIDE
+   * The schema is snapshotted into fresh plain objects, so later caller mutation
+   * of baked.schema (or a getter TOCTOU) cannot move a field after validation. A
+   * FROZEN valid baked object constructs; the argument is never written to. The
+   * raw typed-array lane stays caller-owned by design (see decisions/0002).
+   */
   constructor(baked) {
-    this.buffer    = baked.buffer;
-    this.stride    = baked.stride;              // bytes
-    this.count     = baked.count;
-    this.strideF64 = baked.stride >> 3;
-    this.strideF32 = baked.stride >> 2;
-    this.strideU32 = baked.stride >> 2;
-    this.strideU16 = baked.stride >> 1;
+    // (1) baked shape
+    if (baked === null || typeof baked !== 'object' || Array.isArray(baked)) {
+      raise('R_INPUT', 'lite-bake: Reader(baked) expects a non-null object; got ' + readerShow(baked));
+    }
+    // (2) buffer must be an ArrayBuffer -- a view is fromBytes' job, not raw .buffer.
+    const buffer = baked.buffer;
+    if (!(buffer instanceof ArrayBuffer)) {
+      if (ArrayBuffer.isView(buffer)) {
+        raise('R_INPUT',
+          'lite-bake: baked.buffer is a typed-array view, not an ArrayBuffer -- ' +
+          'use Reader.fromBytes(view, meta), never .buffer raw');
+      }
+      raise('R_INPUT', 'lite-bake: baked.buffer is not an ArrayBuffer; got ' + readerShow(buffer));
+    }
+    // (3) stride
+    const stride = baked.stride;
+    if (typeof stride !== 'number' || !Number.isInteger(stride) || stride <= 0) {
+      raise('R_BAD_STRIDE', 'lite-bake: baked.stride must be a positive integer; got ' + readerShow(stride));
+    }
+    // (4) count
+    const count = baked.count;
+    if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) {
+      raise('R_BAD_COUNT', 'lite-bake: baked.count must be a non-negative integer; got ' + readerShow(count));
+    }
+    // (5) byteLength multiple of 8 (so every typed-array view is constructible).
+    const byteLength = buffer.byteLength;
+    if (byteLength % 8 !== 0) {
+      raise('R_BAD_LENGTH', 'lite-bake: baked.buffer byteLength ' + byteLength + ' is not a multiple of 8');
+    }
+    // (6) truncation -- DIVISION form: count*stride loses float precision for
+    // 2^53-class lying counts and would fail OPEN. floor(byteLength/stride) is exact.
+    if (count > Math.floor(byteLength / stride)) {
+      raise('R_TRUNCATED',
+        'lite-bake: ' + count + ' rows at stride ' + stride + ' do not fit in ' + byteLength + ' bytes');
+    }
+    // (7) schema walk -- SNAPSHOT each entry's {name,type,offset} primitives into
+    // a fresh object and validate/keep ONLY the snapshots (immune to later mutation).
+    const schema = baked.schema;
+    if (!Array.isArray(schema) || schema.length === 0) {
+      raise('R_BAD_SCHEMA', 'lite-bake: baked.schema must be a non-empty array; got ' + readerShow(schema));
+    }
+    const snaps = new Array(schema.length);
+    const seen = Object.create(null);
+    let maxAlign = 1;
+    for (let k = 0; k < schema.length; k++) {
+      const f = schema[k];
+      if (f === null || typeof f !== 'object') {
+        raise('R_BAD_SCHEMA', 'lite-bake: schema[' + k + '] is not a non-null object');
+      }
+      const name = f.name;
+      if (typeof name !== 'string') {
+        raise('R_BAD_SCHEMA', 'lite-bake: schema[' + k + '].name must be a string; got ' + readerShow(name));
+      }
+      if (seen[name]) {
+        raise('R_BAD_SCHEMA', "lite-bake: duplicate field name '" + name + "'");
+      }
+      const type = f.type;
+      if (typeof type !== 'number' || !Number.isInteger(type) || type < 0 || type > 7) {
+        raise('R_BAD_SCHEMA',
+          "lite-bake: schema field '" + name + "' type must be a Types code 0..7; got " + readerShow(type));
+      }
+      const size = BYTES[type];
+      const offset = f.offset;
+      if (typeof offset !== 'number' || !Number.isInteger(offset) || offset < 0) {
+        raise('R_BAD_SCHEMA',
+          "lite-bake: schema field '" + name + "' offset must be a non-negative integer; got " + readerShow(offset));
+      }
+      if (offset % size !== 0) {
+        raise('R_BAD_SCHEMA',
+          "lite-bake: schema field '" + name + "' offset " + offset + ' is not aligned to size ' + size);
+      }
+      if (offset + size > stride) {
+        raise('R_BAD_SCHEMA',
+          "lite-bake: schema field '" + name + "' offset+size " + (offset + size) + ' exceeds stride ' + stride);
+      }
+      seen[name] = true;
+      if (size > maxAlign) maxAlign = size;
+      snaps[k] = { name: name, type: type, offset: offset };
+    }
+    // Overlap check over a scratch copy sorted by offset (cold path; alloc fine).
+    const sorted = snaps.slice().sort((a, b) => a.offset - b.offset);
+    for (let k = 1; k < sorted.length; k++) {
+      const prev = sorted[k - 1];
+      const cur = sorted[k];
+      if (prev.offset + BYTES[prev.type] > cur.offset) {
+        raise('R_BAD_SCHEMA',
+          "lite-bake: fields '" + prev.name + "' and '" + cur.name + "' overlap at offset " + cur.offset);
+      }
+    }
+    // (8) stride must be a multiple of the max field alignment (else strideF64/F32
+    // shift arithmetic is silently wrong on the documented hot lane).
+    if (stride % maxAlign !== 0) {
+      raise('R_BAD_STRIDE',
+        'lite-bake: stride ' + stride + ' is not a multiple of max field alignment ' + maxAlign);
+    }
 
-    this.dv  = new DataView(baked.buffer);
-    this.f64 = new Float64Array(baked.buffer);
-    this.f32 = new Float32Array(baked.buffer);
-    this.i32 = new Int32Array(baked.buffer);
-    this.u32 = new Uint32Array(baked.buffer);
-    this.i16 = new Int16Array(baked.buffer);
-    this.u16 = new Uint16Array(baked.buffer);
-    this.u8  = new Uint8Array(baked.buffer);
-    this.i8  = new Int8Array(baked.buffer);
+    // All doors passed -- construct dv + the 8 views + strides exactly as before.
+    this.buffer    = buffer;
+    this.stride    = stride;              // bytes
+    this.count     = count;
+    this.strideF64 = stride >> 3;
+    this.strideF32 = stride >> 2;
+    this.strideU32 = stride >> 2;
+    this.strideU16 = stride >> 1;
+
+    this.dv  = new DataView(buffer);
+    this.f64 = new Float64Array(buffer);
+    this.f32 = new Float32Array(buffer);
+    this.i32 = new Int32Array(buffer);
+    this.u32 = new Uint32Array(buffer);
+    this.i16 = new Int16Array(buffer);
+    this.u16 = new Uint16Array(buffer);
+    this.u8  = new Uint8Array(buffer);
+    this.i8  = new Int8Array(buffer);
 
     this._fields = Object.create(null);
-    for (const f of baked.schema) this._fields[f.name] = f;
+    for (let k = 0; k < snaps.length; k++) this._fields[snaps[k].name] = snaps[k];
+  }
+
+  /**
+   * Reconstruct a Reader from on-disk bytes, honoring byteOffset/byteLength.
+   * Accepts an ArrayBuffer or a Uint8Array (a Node Buffer IS a Uint8Array);
+   * anything else (DataView, other TypedArray, string, null, ...) refuses with
+   * R_INPUT. Resolution:
+   *   - ArrayBuffer                                       -> use as-is (zero-copy)
+   *   - Uint8Array spanning its ENTIRE backing buffer     -> use .buffer (zero-copy)
+   *   - any other Uint8Array (pooled / offset view)       -> COPY the viewed range
+   *     into a fresh ArrayBuffer of exactly bytes.byteLength
+   * The resolved buffer is handed to the constructor, which is the ONLY
+   * validation site (fromBytes adds ZERO duplicated checks). Invariant:
+   * reader.buffer never exposes bytes outside the dataset -- the write-back
+   * recipe `new Uint8Array(reader.buffer)` stays safe (see decisions/0003).
+   */
+  static fromBytes(bytes, meta) {
+    if (meta === null || typeof meta !== 'object' || Array.isArray(meta)) {
+      raise('R_INPUT',
+        'lite-bake: Reader.fromBytes(bytes, meta) expects meta to be a non-null object; got ' + readerShow(meta));
+    }
+    let buffer;
+    if (bytes instanceof ArrayBuffer) {
+      buffer = bytes;                                        // zero-copy
+    } else if (bytes instanceof Uint8Array) {
+      if (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength) {
+        buffer = bytes.buffer;                              // full span -> zero-copy
+      } else {
+        // Pooled / offset view: copy exactly the viewed range, nothing around it.
+        buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      }
+    } else {
+      raise('R_INPUT',
+        'lite-bake: Reader.fromBytes(bytes, ...) expects an ArrayBuffer or a Uint8Array; got ' + readerShow(bytes));
+    }
+    return new Reader({ buffer: buffer, stride: meta.stride, count: meta.count, schema: meta.schema });
   }
 
   /** Raw byte offset within one record. Works for any field type. */
@@ -393,8 +553,16 @@ export class Reader {
     return f;
   }
 
-  /** Init/debug only — branches + string lookup, NOT for hot loops. */
+  /**
+   * Init/debug only -- branches + string lookup, NOT for hot loops. `i` must be
+   * an integer in [0, count) or it refuses R_ROW_OUT_OF_RANGE (one bounds policy;
+   * no silent padding read, no fractional truncation, no raw RangeError). The raw
+   * typed-array lane is caller-owned by design and stays unguarded.
+   */
   get(i, name) {
+    if (!Number.isInteger(i) || i < 0 || i >= this.count) {
+      raise('R_ROW_OUT_OF_RANGE', 'lite-bake: row index ' + i + ' is not an integer in [0, ' + this.count + ')');
+    }
     const f = this._fields[name];
     if (!f) raise('R_UNKNOWN_FIELD', `lite-bake: unknown field '${name}'`);
     const addr = i * this.stride + f.offset;
@@ -410,12 +578,33 @@ export class Reader {
     }
   }
 
-  /** Debug only — allocates a fresh object every call. Useful for console.log(reader.row(i)). */
+  /**
+   * Debug only -- allocates a fresh object every call. Useful for
+   * console.log(reader.row(i)). `i` must be an integer in [0, count) or it
+   * refuses R_ROW_OUT_OF_RANGE (checked before the loop).
+   */
   row(i) {
+    if (!Number.isInteger(i) || i < 0 || i >= this.count) {
+      raise('R_ROW_OUT_OF_RANGE', 'lite-bake: row index ' + i + ' is not an integer in [0, ' + this.count + ')');
+    }
     const out = {};
     for (const name in this._fields) out[name] = this.get(i, name);
     return out;
   }
+}
+
+// Cold-path describer for Reader door messages: names a value's kind for the
+// refusal string. Reached only on a throw, so allocation here is free.
+function readerShow(v) {
+  if (v === null) return 'null';
+  const t = typeof v;
+  if (t === 'object') {
+    if (Array.isArray(v)) return 'array';
+    const c = v.constructor;
+    return c && typeof c.name === 'string' && c.name ? c.name : 'object';
+  }
+  if (t === 'string') return "'" + v + "'";
+  return String(v);
 }
 
 export const Types = { F32, F64, I32, I16, I8, U32, U16, U8 };

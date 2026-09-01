@@ -11,14 +11,14 @@
  *
  * Not measured by lite-gc-profiler; allocation is free here.
  *
- * BK-12 (README claims a 4-byte stride minimum that the code does not enforce) is
- * registered as a todo: it reproduces while the README still carries the
- * "padded to 4 (the minimum)" line AND an all-U8 three-field bake yields stride 3.
+ * BK-12 CLOSED (B2): the doc moved, not the code. The false README stride-minimum
+ * line is gone and stride equals the max field alignment (an all-U8 three-field
+ * bake yields stride 3). Both facts are now enforced checks, not a todo.
  */
 
 import { readFileSync } from 'node:fs';
 import { bake, Reader, Types } from '../../src/index.js';
-import { makePrng, SEED, check, checkLayout, todoReproduced } from './harness.mjs';
+import { makePrng, SEED, check, checkLayout } from './harness.mjs';
 
 const ITERS = 256;
 const MAX_FIELDS = 64;
@@ -98,10 +98,11 @@ export function run() {
     }
   }
 
-  // BK-12: the README's stride-minimum claim does not exist in the code.
+  // BK-12 CLOSED (B2): the false README stride-minimum line is gone, and stride
+  // equals the max field alignment -- three U8 fields yield stride 3, not 4.
   const readme = readFileSync(new URL('../../README.md', import.meta.url), 'utf8');
-  todoReproduced('BK-12-stride-minimum-claim', () => {
-    const stride = bake([{ a: 1, b: 2, c: 3 }]).stride; // three U8 fields
-    return readme.includes('padded to 4 (the minimum)') && stride === 3;
-  });
+  check(!readme.includes('padded to 4 (the minimum)'),
+    () => 't2.BK-12: the false "padded to 4 (the minimum)" line is still in README.md');
+  check(bake([{ a: 1, b: 2, c: 3 }]).stride === 3,
+    () => 't2.BK-12: three-U8 record stride ' + bake([{ a: 1, b: 2, c: 3 }]).stride + ' != 3 (max-alignment pin)');
 }

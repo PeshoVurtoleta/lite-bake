@@ -1,20 +1,17 @@
 /**
- * t4 -- API abuse (every case gets a decided policy). STUB.
+ * t4 -- API abuse (every case gets a decided policy). LIVE.
  *
- * B1/B2 fill this tier: every misuse gets a decided policy (throw / documented
- * no-op / documented value -- "silently returns garbage" is not one of the
- * three). For now it registers the six fail-open S2 findings it owns as `todo`s
- * that must STILL reproduce: BK-06 (validate ignores values), BK-07 (schema
- * override fails open), BK-08 (opts fail open on typos), BK-10 (row index fails
- * open three ways), BK-11 (non-object/empty records), BK-13 (fields beyond
- * record 0 dropped, absent fields read 0). Probe bodies ported from
- * bench/findings-probes-2026-09-01.mjs.
- *
- * BK-06/07/08/11/13 fix in B1 (write-side doors + opts validator); BK-10 in B2.
+ * Every misuse gets a decided policy (throw / documented no-op / documented
+ * value -- "silently returns garbage" is not one of the three). B1 closed the
+ * write-side fail-opens (BK-06 validate ignores values, BK-07 schema override
+ * fails open, BK-08 opts fail open on typos, BK-11 non-object/empty records,
+ * BK-13 drift); B2 closes BK-10 -- out-of-range/non-integer row indices refuse
+ * with R_ROW_OUT_OF_RANGE instead of failing open three ways. Every case is an
+ * enforced check pinning the exact code plus a non-vacuous clean twin.
  */
 
 import { bake, Reader, Types } from '../../src/index.js';
-import { todoReproduced, check } from './harness.mjs';
+import { check } from './harness.mjs';
 
 function caught(fn) {
   try { fn(); return null; } catch (e) { return e; }
@@ -77,21 +74,37 @@ export function run() {
   check(rAbs.get(1, 'b') === 0,
     () => 't4.BK-13: coerce:zero absent field did not read 0');
 
-  // BK-10: row index fails open -- padding reads as rows, fractions truncate.
-  // The B2 bounds policy makes out-of-range/non-integer i throw R_ROW_OUT_OF_RANGE,
-  // so a fix throws where today it silently returns a number. Catch the silent
-  // reads via caught(): after the fix they carry a code (or throw), flipping the
-  // todo. eNeg/ePast use caught() because today they already throw a raw error.
-  todoReproduced('BK-10-row-bounds-failopen', () => {
-    const r = new Reader(bake([{ a: 7 }]));   // U8, stride 1, buffer padded to 8
-    let pad, frac;
-    const ePad = caught(() => { pad = r.get(1, 'a'); });   // count is 1; rows 1..7 are padding
-    const eFrac = caught(() => { frac = r.get(0.5, 'a'); }); // ToIndex truncation
-    const eNeg = caught(() => r.get(-1, 'a'));
-    const ePast = caught(() => r.get(8, 'a'));
-    // !! coerces the object-operand && chain to a strict boolean.
-    return !!(!ePad && pad === 0 && !eFrac && frac === 7 &&
-              eNeg && eNeg.name === 'RangeError' && !eNeg.code &&
-              ePast && ePast.name === 'RangeError' && !ePast.code);
-  });
+  // BK-10 CLOSED (B2): out-of-range/non-integer row indices refuse with one code.
+  // On a count-1 bake, padding reads, fractional truncation, negatives, past-count
+  // and 2**53-class indices all throw R_ROW_OUT_OF_RANGE; get(0) still reads 7
+  // (the non-vacuous twin). Both get() and row() carry the policy.
+  const rb = new Reader(bake([{ a: 7 }]));   // U8, stride 1, count 1, buffer padded to 8
+  const e10pad  = caught(() => rb.get(1, 'a'));      // count is 1; row 1 is padding
+  check(!!e10pad && e10pad.code === 'R_ROW_OUT_OF_RANGE',
+    () => 't4.BK-10: get(1) padding read not refused (code=' + (e10pad && e10pad.code) + ')');
+  const e10frac = caught(() => rb.get(0.5, 'a'));    // fractional index
+  check(!!e10frac && e10frac.code === 'R_ROW_OUT_OF_RANGE',
+    () => 't4.BK-10: get(0.5) fractional index not refused (code=' + (e10frac && e10frac.code) + ')');
+  const e10neg  = caught(() => rb.get(-1, 'a'));
+  check(!!e10neg && e10neg.code === 'R_ROW_OUT_OF_RANGE',
+    () => 't4.BK-10: get(-1) not refused (code=' + (e10neg && e10neg.code) + ')');
+  const e10past = caught(() => rb.get(8, 'a'));
+  check(!!e10past && e10past.code === 'R_ROW_OUT_OF_RANGE',
+    () => 't4.BK-10: get(8) past-buffer not refused (code=' + (e10past && e10past.code) + ')');
+  const e10huge = caught(() => rb.get(2 ** 53, 'a'));
+  check(!!e10huge && e10huge.code === 'R_ROW_OUT_OF_RANGE',
+    () => 't4.BK-10: get(2**53) not refused (code=' + (e10huge && e10huge.code) + ')');
+  const e10rowPast = caught(() => rb.row(1));
+  check(!!e10rowPast && e10rowPast.code === 'R_ROW_OUT_OF_RANGE',
+    () => 't4.BK-10: row(1) past-count not refused (code=' + (e10rowPast && e10rowPast.code) + ')');
+  const e10rowNeg = caught(() => rb.row(-1));
+  check(!!e10rowNeg && e10rowNeg.code === 'R_ROW_OUT_OF_RANGE',
+    () => 't4.BK-10: row(-1) not refused (code=' + (e10rowNeg && e10rowNeg.code) + ')');
+  // Bounds are checked BEFORE the field lookup: a bad index on a ghost field is
+  // R_ROW_OUT_OF_RANGE, not R_UNKNOWN_FIELD (precedence pin).
+  const e10ghost = caught(() => rb.get(-1, 'ghost'));
+  check(!!e10ghost && e10ghost.code === 'R_ROW_OUT_OF_RANGE',
+    () => 't4.BK-10: get(-1, "ghost") bounds precedence (code=' + (e10ghost && e10ghost.code) + ')');
+  check(rb.get(0, 'a') === 7,
+    () => 't4.BK-10: get(0) did not read 7 (got ' + rb.get(0, 'a') + ')');
 }

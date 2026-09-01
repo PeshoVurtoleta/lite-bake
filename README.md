@@ -249,6 +249,13 @@ Every door throws a `LiteBakeError` (an `Error` subclass) with a `.code`. Catch 
 | `E_BAD_TYPE` | `schema` override value is not a Types code `0..7` |
 | `R_UNKNOWN_FIELD` | Reader asked for a field the schema does not have |
 | `R_WRONG_TYPE` | Reader asked for a field under the wrong lane width |
+| `R_INPUT` | `baked`/`meta` is not a non-null object, or `buffer`/`bytes` is not an accepted binary type |
+| `R_BAD_STRIDE` | `stride` is not a positive integer, or is not a multiple of the schema's max lane alignment |
+| `R_BAD_COUNT` | `count` is not a non-negative integer |
+| `R_BAD_LENGTH` | `buffer` byteLength is not a multiple of 8 |
+| `R_TRUNCATED` | `count` rows at `stride` bytes do not fit in the buffer |
+| `R_BAD_SCHEMA` | `schema` is not a non-empty array of well-formed, aligned, in-stride, non-overlapping fields |
+| `R_ROW_OUT_OF_RANGE` | `get()`/`row()` index is not an integer in `[0, count)` |
 
 ### `new Reader(baked)`
 
@@ -271,13 +278,27 @@ Every door throws a `LiteBakeError` (an `Error` subclass) with a `.code`. Catch 
 
 All `offsetXxx(name)` helpers **type-check** the field. `offsetF32('tag')` on a `U8` field throws — this catches schema-reads-as-wrong-type bugs at init, not in the hot loop.
 
+`get(i, name)` and `row(i)` enforce one bounds policy: `i` must be an integer in `[0, count)`, or they throw `R_ROW_OUT_OF_RANGE` (no silent padding read, no fractional truncation, no raw `RangeError`). The raw typed-array lane (`f64[i * strideF64 + off]`) is caller-owned by design and stays unguarded -- bounds are the price of the zero-instruction hot loop.
+
+The constructor is a coherence door: an incoherent `baked` (bad buffer/stride/count/length/schema) is refused with a stable `R_*` code before any view is built, and the schema is snapshotted so later mutation of `baked.schema` cannot move a field.
+
+### `Reader.fromBytes(bytes, meta)`
+
+```js
+const r = Reader.fromBytes(readFileSync('table.bin'), meta); // meta = { stride, count, schema }
+```
+
+Reconstruct a `Reader` from on-disk bytes. Accepts an `ArrayBuffer` or a `Uint8Array` (a Node `Buffer` **is** a `Uint8Array`), **honoring `byteOffset`/`byteLength`** -- so a pooled `readFileSync` `Buffer` is safe. It reuses the buffer zero-copy when given an `ArrayBuffer` or a full-span view, and copies only the viewed range when the view does not span its backing buffer, so `r.buffer` never exposes bytes outside the dataset. Anything else (`DataView`, another `TypedArray`, a string, `null`) refuses with `R_INPUT`; the resolved buffer then runs the same coherence doors as the constructor.
+
 ---
 
 ## Edge cases & gotchas
 
 ### Stride is padded to the largest field's alignment
 
-If your schema has an `F64`, stride is a multiple of 8. An `F32`-only schema gets stride padded to 4. An all-`U8` schema gets stride padded to 4 (the minimum). This keeps `i * strideF32 + off` arithmetic exact for every field.
+Stride is padded to the **largest** field's alignment -- no more, no less. If your schema has an `F64`, stride is a multiple of 8. An `F32`-only schema gets stride padded to 4. An all-`U8` schema has stride equal to its field count in bytes (three `U8` fields -> stride 3); there is no forced minimum. This keeps `i * strideF64 + off` arithmetic exact for the widest lane present.
+
+On a sub-4-byte stride there is no aligned 4-byte lane, so `strideF32` and `strideU32` (computed by integer shift `stride >> 2`) are `0`. Read such tables through `r.stride` and the `u8` lane, not the F32/U32 shift lanes.
 
 ### The buffer byte length is padded up to a multiple of 8
 
@@ -347,7 +368,7 @@ Measured on Node 22, 50,000 records (random x/y/type/hp), 100 loop passes per tr
 npm test
 ```
 
-Uses Node's built-in `node:test` runner. Zero dependencies. 63 tests covering input validation, type inference, round-trip correctness, layout/alignment, schema overrides, the strict-default write-side doors (`test/Doors.test.js`), Reader helpers, and integration. Should complete in under a second.
+Uses Node's built-in `node:test` runner. Zero dependencies. 95 tests covering input validation, type inference, round-trip correctness, layout/alignment, schema overrides, the strict-default write-side doors (`test/Doors.test.js`), the Reader coherence + bounds + `fromBytes` doors (`test/ReaderDoors.test.js`), Reader helpers, and integration. Should complete in under a second.
 
 ### What the tests cover
 
@@ -432,7 +453,7 @@ test('my game: enemy table round-trips', () => {
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| `RangeError: Float64Array byte length...` | Running old lite-bake (pre-1.0.0 fix) | Upgrade |
+| `R_BAD_LENGTH` thrown from `new Reader` | The buffer byteLength is not a multiple of 8 -- usually a truncated or partially-written file | Re-save the full buffer (`new Uint8Array(baked.buffer)`); reconstruct with `Reader.fromBytes`. (Old lite-bake threw a raw `RangeError` from `Float64Array` here; since 1.1.1 the Reader fails closed with a coded refusal.) |
 | Values read back as `0` | Field was non-numeric, or forgot schema override for F32 on whole ints | `console.log(b.schema)` |
 | Values read back as wrong integer | Inference picked U8, real range exceeded 255 | Add schema override |
 | Coords drift slightly each frame | F32 precision on large values | Override to F64 |
@@ -455,7 +476,7 @@ Yes. Zero Node-specific APIs. Use any bundler, or load directly as ES module.
 Yes — `baked.buffer` is a raw `ArrayBuffer` that you can `gl.bufferData` directly. But if that's your specific use case, see also `lite-batch-buffer` (sibling library for per-frame interleaved vertex staging).
 
 **Can I serialize the baked buffer to disk?**
-Yes — write `new Uint8Array(baked.buffer)` to a file. You'll need to separately record the schema (just `JSON.stringify(baked.schema)`) to reconstruct the `Reader`. A `serialize()` / `deserialize()` pair is on the roadmap.
+Yes -- write `new Uint8Array(baked.buffer)` to a file and save the metadata alongside it (`JSON.stringify({ stride: baked.stride, count: baked.count, schema: baked.schema })`). Reconstruct with `Reader.fromBytes(readFileSync(file), meta)` -- it honors `byteOffset`, so a pooled `readFileSync` `Buffer` (Node's internal Buffer pool hands back views with a nonzero `byteOffset`) is read correctly, and it copies only when the view does not span its backing buffer. A `serialize()` / `deserialize()` pair (a self-describing container with the schema embedded) is still on the roadmap.
 
 **Is this actually faster than V8's JIT?**
 Yes, but not for the reasons you'd think. V8's object JIT is excellent — so the win isn't in per-access speed, it's in **cache behaviour, consistent allocation, and GC absence**. The hot loop is 2× faster in micro-benchmarks, but the frame-timing consistency is where real games notice the difference.

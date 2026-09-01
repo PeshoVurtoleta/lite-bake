@@ -18,7 +18,14 @@ export type BakeErrorCode =
   | 'E_UNKNOWN_FIELD'
   | 'E_BAD_TYPE'
   | 'R_UNKNOWN_FIELD'
-  | 'R_WRONG_TYPE';
+  | 'R_WRONG_TYPE'
+  | 'R_INPUT'             // baked/meta is not a non-null object, or buffer/bytes is not an accepted binary type
+  | 'R_BAD_STRIDE'       // stride is not a positive integer, or is not a multiple of the schema's max lane alignment
+  | 'R_BAD_COUNT'        // count is not a non-negative integer
+  | 'R_BAD_LENGTH'       // buffer byteLength is not a multiple of 8
+  | 'R_TRUNCATED'        // count rows at stride bytes do not fit in the buffer
+  | 'R_BAD_SCHEMA'       // schema is not a non-empty array of well-formed, aligned, in-stride, non-overlapping fields
+  | 'R_ROW_OUT_OF_RANGE'; // get()/row() index is not an integer in [0, count)
 
 /** Error thrown by every bake()/Reader refusal; the `code` is the stable contract. */
 export class LiteBakeError extends Error {
@@ -52,6 +59,13 @@ export interface Baked {
   schema: readonly Field[];
 }
 
+/** Metadata needed to reconstruct a Reader from raw bytes via Reader.fromBytes. */
+export interface BakedMeta {
+  stride: number;
+  count: number;
+  schema: readonly Field[];
+}
+
 export interface BakeOptions {
   /** Override inferred types per field. Missing entries are still inferred. */
   schema?: Record<string, FieldTypeCode>;
@@ -79,7 +93,25 @@ export interface BakeOptions {
 export function bake(records: ReadonlyArray<Record<string, unknown>>, opts?: BakeOptions): Baked;
 
 export class Reader {
+  /**
+   * Trusts nothing: refuses an incoherent `baked` with a stable R_* code BEFORE
+   * constructing any view (baked shape -> R_INPUT; buffer not an ArrayBuffer ->
+   * R_INPUT; bad stride -> R_BAD_STRIDE; bad count -> R_BAD_COUNT; byteLength not
+   * a multiple of 8 -> R_BAD_LENGTH; rows do not fit -> R_TRUNCATED; malformed
+   * schema -> R_BAD_SCHEMA). The schema is snapshotted, so later caller mutation
+   * cannot move a field after validation. A frozen valid baked object constructs.
+   */
   constructor(baked: Baked);
+
+  /**
+   * Reconstruct a Reader from on-disk bytes, honoring byteOffset/byteLength.
+   * Accepts pooled/offset views (a Node Buffer from readFileSync is safe) and
+   * copies only when the view does not span its whole backing buffer; an
+   * ArrayBuffer or a full-span Uint8Array is used zero-copy. Anything else
+   * (DataView, other TypedArray, string, null) refuses R_INPUT. The resolved
+   * buffer runs the SAME coherence doors as the constructor.
+   */
+  static fromBytes(bytes: ArrayBuffer | Uint8Array, meta: BakedMeta): Reader;
 
   readonly buffer: ArrayBuffer;
   readonly stride: number;           // bytes
@@ -123,9 +155,17 @@ export class Reader {
   offsetI8(name: string): number;
   offsetU8(name: string): number;
 
-  /** Init/debug only — branches and does a string lookup. Not for hot loops. */
+  /**
+   * Init/debug only -- branches and does a string lookup. Not for hot loops.
+   * `i` must be an integer in [0, count) or it throws R_ROW_OUT_OF_RANGE (one
+   * bounds policy: no silent padding read, no fractional truncation, no raw
+   * RangeError). The raw typed-array lane is caller-owned and stays unguarded.
+   */
   get(i: number, name: string): number;
 
-  /** Debug only — allocates a plain object per call. Useful for `console.log`. */
+  /**
+   * Debug only -- allocates a plain object per call. Useful for `console.log`.
+   * `i` must be an integer in [0, count) or it throws R_ROW_OUT_OF_RANGE.
+   */
   row(i: number): Record<string, number>;
 }
