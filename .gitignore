@@ -6,3 +6,10 @@ coverage/
 dist/
 .vscode/
 .idea/
+/package-lock.json
+
+# local-only working docs: evaluation roadmap, session briefs, finding probes
+/ROADMAP.md
+/BRIEF.md
+/bench/findings-probes-*.mjs
+/.claude/settings.local.json
