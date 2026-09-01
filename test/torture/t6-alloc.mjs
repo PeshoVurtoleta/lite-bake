@@ -22,8 +22,11 @@
  *           with a gc'd before/after arrayBuffers delta proves no cross-call
  *           retention (see the comment on that gate).
  *
- * BAKE_TORTURE_BREAK=1 injects a retained allocation into the hot body: the gate
- * must then reject the window. That is the whole-suite control, exercised here.
+ * BAKE_TORTURE_BREAK=1 injects a retained allocation into this hot body so the
+ * gate rejects the window. Under a normal top-to-bottom run t5's oracle-misapply
+ * canary now dies before this tier is reached, so this injection is not what
+ * trips first; it stays live as t9's Control 1 exercises the same alloc lane
+ * in-process, and it guards any future tier reordering.
  */
 
 import { bake, Reader, Types } from '../../src/index.js';

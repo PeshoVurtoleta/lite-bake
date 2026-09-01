@@ -4,6 +4,29 @@
 
 export type FieldTypeCode = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
+/** Stable `code` carried by every LiteBakeError. E_* on the write side, R_* on the Reader side. */
+export type BakeErrorCode =
+  | 'E_INPUT'
+  | 'E_NOT_A_RECORD'
+  | 'E_EMPTY_RECORD'
+  | 'E_NON_NUMERIC'
+  | 'E_MISSING_FIELD'
+  | 'E_UNEXPECTED_FIELD'
+  | 'E_UNKNOWN_OPTION'
+  | 'E_OPTION_VALUE'
+  | 'E_OPTION_CONFLICT'
+  | 'E_UNKNOWN_FIELD'
+  | 'E_BAD_TYPE'
+  | 'R_UNKNOWN_FIELD'
+  | 'R_WRONG_TYPE';
+
+/** Error thrown by every bake()/Reader refusal; the `code` is the stable contract. */
+export class LiteBakeError extends Error {
+  readonly name: 'LiteBakeError';
+  readonly code: BakeErrorCode;
+  constructor(code: BakeErrorCode, message: string);
+}
+
 export interface Types {
   readonly F32: 0;
   readonly F64: 1;
@@ -33,10 +56,20 @@ export interface BakeOptions {
   /** Override inferred types per field. Missing entries are still inferred. */
   schema?: Record<string, FieldTypeCode>;
   /**
-   * Assert that every record has exactly the same keys as record 0.
-   * Dev/QA only — has O(n * fields) cost. Default: false.
+   * Explicit synonym of the strict default: assert that every record has exactly
+   * the same keys as record 0, and also refuse non-numeric values (E_NON_NUMERIC).
+   * Kept so 1.0.x call sites keep working and now mean what they say. Conflicts
+   * with `coerce` (E_OPTION_CONFLICT). Default behavior is already strict.
    */
   validate?: boolean;
+  /**
+   * Restore 1.0.x leniency: non-number values (strings, booleans, null,
+   * undefined, objects) and absent fields store as 0, and extra fields are
+   * dropped, instead of refusing. Numbers are never coerced in any mode, so
+   * NaN/-0/Infinity are still preserved in float lanes. Conflicts with
+   * `validate: true` (E_OPTION_CONFLICT).
+   */
+  coerce?: 'zero';
 }
 
 /**

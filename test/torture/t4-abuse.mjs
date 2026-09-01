@@ -14,43 +14,68 @@
  */
 
 import { bake, Reader, Types } from '../../src/index.js';
-import { todoReproduced } from './harness.mjs';
+import { todoReproduced, check } from './harness.mjs';
 
 function caught(fn) {
   try { fn(); return null; } catch (e) { return e; }
 }
 
 export function run() {
-  // BK-06: validate:true does not validate values (README says it catches null).
-  todoReproduced('BK-06-validate-ignores-values', () => {
-    let v0 = null;
-    const e1 = caught(() => {
-      const r = new Reader(bake([{ v: null }, { v: 2 }], { validate: true }));
-      v0 = r.get(0, 'v'); r.get(1, 'v');
-    });
-    const e2 = caught(() => bake([{ v: 'boom' }, { v: 'x' }], { validate: true }));
-    return !e1 && !e2 && v0 === 0;
-  });
+  // BK-06 CLOSED (B1): validate:true now inspects values. {v:null} refuses with
+  // E_NON_NUMERIC; a clean numeric corpus still passes (non-vacuous twin).
+  const e06 = caught(() => bake([{ v: null }, { v: 2 }], { validate: true }));
+  check(!!e06 && e06.code === 'E_NON_NUMERIC',
+    () => 't4.BK-06: validate:true accepted {v:null} (code=' + (e06 && e06.code) + ')');
+  check(caught(() => bake([{ v: 1 }, { v: 2 }], { validate: true })) === null,
+    () => 't4.BK-06: validate:true rejected a clean numeric corpus');
 
-  // BK-07: schema override fails open on garbage type codes and unknown fields.
-  todoReproduced('BK-07-schema-override-failopen', () => {
-    let b1 = null, g1;
-    const e1 = caught(() => { b1 = bake([{ v: 1.5 }], { schema: { v: 99 } }); g1 = new Reader(b1).get(0, 'v'); });
-    let b2 = null;
-    const e2 = caught(() => { b2 = bake([{ v: 1.5 }], { schema: { v: 'F64' } }); });
-    let b3 = null;
-    const e3 = caught(() => { b3 = bake([{ a: 1 }], { schema: { ghost: Types.F32 } }); });
-    return !e1 && b1.buffer.byteLength === 0 && g1 === undefined &&
-           !e2 && b2.buffer.byteLength === 0 &&
-           !e3 && !b3.schema.some((f) => f.name === 'ghost');
-  });
+  // BK-07 CLOSED (B1): schema override door refuses bad codes and ghost fields.
+  const e07a = caught(() => bake([{ v: 1.5 }], { schema: { v: 99 } }));
+  check(!!e07a && e07a.code === 'E_BAD_TYPE',
+    () => 't4.BK-07: type code 99 not refused (code=' + (e07a && e07a.code) + ')');
+  const e07b = caught(() => bake([{ v: 1.5 }], { schema: { v: 'F64' } }));
+  check(!!e07b && e07b.code === 'E_BAD_TYPE',
+    () => 't4.BK-07: string code not refused (code=' + (e07b && e07b.code) + ')');
+  const e07c = caught(() => bake([{ a: 1 }], { schema: { ghost: Types.F32 } }));
+  check(!!e07c && e07c.code === 'E_UNKNOWN_FIELD',
+    () => 't4.BK-07: ghost override not refused (code=' + (e07c && e07c.code) + ')');
+  check(caught(() => bake([{ v: 1.5 }], { schema: { v: Types.F64 } })) === null,
+    () => 't4.BK-07: a valid override was refused');
 
-  // BK-08: bake() opts fail open -- typo'd keys silently disable features.
-  todoReproduced('BK-08-opts-failopen', () => {
-    let b = null;
-    const e = caught(() => { b = bake([{ v: 1.5 }], { shcema: { v: Types.F64 }, validat: true, strict: true }); });
-    return !e && b.schema[0].type === Types.F32;
-  });
+  // BK-08 CLOSED (B1): opts door refuses typos with a did-you-mean; valid passes.
+  const e08 = caught(() => bake([{ v: 1.5 }], { shcema: { v: Types.F64 } }));
+  check(!!e08 && e08.code === 'E_UNKNOWN_OPTION' && /did you mean 'schema'/.test(e08.message),
+    () => 't4.BK-08: typo shcema not refused (code=' + (e08 && e08.code) + ')');
+  check(caught(() => bake([{ v: 1.5 }], { validate: true })) === null,
+    () => 't4.BK-08: a valid opts object was refused');
+
+  // BK-11 CLOSED (B1): record-shape door refuses non-objects and empty records.
+  const e11a = caught(() => bake([1, 2, 3]));
+  check(!!e11a && e11a.code === 'E_NOT_A_RECORD',
+    () => 't4.BK-11: bake([1,2,3]) not refused (code=' + (e11a && e11a.code) + ')');
+  const e11b = caught(() => bake(['ab', 'cd']));
+  check(!!e11b && e11b.code === 'E_NOT_A_RECORD',
+    () => 't4.BK-11: bake(strings) not refused (code=' + (e11b && e11b.code) + ')');
+  const e11c = caught(() => bake([{}, {}]));
+  check(!!e11c && e11c.code === 'E_EMPTY_RECORD',
+    () => 't4.BK-11: bake([{},{}]) not refused (code=' + (e11c && e11c.code) + ')');
+  check(caught(() => bake([{ a: 1 }, { a: 2 }])) === null,
+    () => 't4.BK-11: a valid record array was refused');
+
+  // BK-13 CLOSED (B1): drift door refuses extras and absents by default; the
+  // coerce:'zero' twin reproduces the old record-0-keyset behavior.
+  const e13a = caught(() => bake([{ a: 1 }, { a: 2, b: 99 }]));
+  check(!!e13a && e13a.code === 'E_UNEXPECTED_FIELD',
+    () => 't4.BK-13: extra field not refused (code=' + (e13a && e13a.code) + ')');
+  const e13b = caught(() => bake([{ a: 1, b: 5 }, { a: 2 }]));
+  check(!!e13b && e13b.code === 'E_MISSING_FIELD',
+    () => 't4.BK-13: absent field not refused (code=' + (e13b && e13b.code) + ')');
+  const bDrop = bake([{ a: 1 }, { a: 2, b: 99 }], { coerce: 'zero' });
+  check(!bDrop.schema.some((f) => f.name === 'b'),
+    () => 't4.BK-13: coerce:zero did not drop the extra field');
+  const rAbs = new Reader(bake([{ a: 1, b: 5 }, { a: 2 }], { coerce: 'zero' }));
+  check(rAbs.get(1, 'b') === 0,
+    () => 't4.BK-13: coerce:zero absent field did not read 0');
 
   // BK-10: row index fails open -- padding reads as rows, fractions truncate.
   // The B2 bounds policy makes out-of-range/non-integer i throw R_ROW_OUT_OF_RANGE,
@@ -68,32 +93,5 @@ export function run() {
     return !!(!ePad && pad === 0 && !eFrac && frac === 7 &&
               eNeg && eNeg.name === 'RangeError' && !eNeg.code &&
               ePast && ePast.name === 'RangeError' && !ePast.code);
-  });
-
-  // BK-11: non-object and empty records bake into silent nonsense.
-  todoReproduced('BK-11-nonobject-records', () => {
-    let b1 = null, b2 = null, b3 = null;
-    const e1 = caught(() => { b1 = bake([1, 2, 3]); });
-    const e2 = caught(() => { b2 = bake(['ab', 'cd']); });
-    const e3 = caught(() => { b3 = bake([{}, {}]); });
-    return !e1 && b1.count === 3 && b1.buffer.byteLength === 0 && b1.schema.length === 0 &&
-           !e2 && b2.schema.some((f) => f.name === '0') &&
-           !e3 && b3.buffer.byteLength === 0;
-  });
-
-  // BK-13: fields beyond record 0 silently dropped; absent fields read 0.
-  // The B1 field-set door refuses key drift by default (throws), so both bakes
-  // throw after the fix. Catch our own expected throws and return false.
-  todoReproduced('BK-13-dropped-and-absent-fields', () => {
-    let dropped, absent;
-    const eDrop = caught(() => {
-      const b1 = bake([{ a: 1 }, { a: 2, b: 99 }]);
-      dropped = !b1.schema.some((f) => f.name === 'b');
-    });
-    const eAbsent = caught(() => {
-      const r2 = new Reader(bake([{ a: 1, b: 5 }, { a: 2 }]));
-      absent = r2.get(1, 'b');
-    });
-    return !eDrop && dropped === true && !eAbsent && absent === 0;
   });
 }

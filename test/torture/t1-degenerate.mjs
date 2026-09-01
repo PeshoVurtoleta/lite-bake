@@ -15,7 +15,7 @@
  */
 
 import { bake, Reader, Types } from '../../src/index.js';
-import { todoReproduced } from './harness.mjs';
+import { todoReproduced, check } from './harness.mjs';
 
 export function run() {
   // BK-01: integer inference has no 32-bit ceiling; values wrap silently.
@@ -45,10 +45,28 @@ export function run() {
     return t1 === Types.F32 && v1 !== 0.1 && v2 === 20000000;
   });
 
-  // BK-03: NaN and -0 destroyed even under an explicit F64 override (`+v || 0`).
-  todoReproduced('BK-03-nan-negzero-destroyed', () => {
-    const rNan = new Reader(bake([{ v: NaN }], { schema: { v: Types.F64 } })).get(0, 'v');
-    const rNegZero = new Reader(bake([{ v: -0 }], { schema: { v: Types.F64 } })).get(0, 'v');
-    return rNan === 0 && Object.is(rNegZero, 0) && !Object.is(rNegZero, -0);
-  });
+  // BK-03 CLOSED (B1): NaN, -0 and +/-Infinity now survive the value door in
+  // every float lane -- numbers write direct. Enforced, no longer a todo.
+  const f64 = new Reader(bake(
+    [{ v: NaN }, { v: -0 }, { v: Infinity }, { v: -Infinity }],
+    { schema: { v: Types.F64 } }));
+  check(Number.isNaN(f64.get(0, 'v')), () => 't1.BK-03: F64 override lost NaN');
+  check(Object.is(f64.get(1, 'v'), -0), () => 't1.BK-03: F64 override lost -0');
+  check(f64.get(2, 'v') === Infinity, () => 't1.BK-03: F64 override lost +Infinity');
+  check(f64.get(3, 'v') === -Infinity, () => 't1.BK-03: F64 override lost -Infinity');
+
+  const f32 = new Reader(bake(
+    [{ v: NaN }, { v: -0 }, { v: Infinity }, { v: -Infinity }],
+    { schema: { v: Types.F32 } }));
+  check(Number.isNaN(f32.get(0, 'v')), () => 't1.BK-03: F32 override lost NaN');
+  check(Object.is(f32.get(1, 'v'), -0), () => 't1.BK-03: F32 override lost -0');
+  check(f32.get(2, 'v') === Infinity, () => 't1.BK-03: F32 override lost +Infinity');
+  check(f32.get(3, 'v') === -Infinity, () => 't1.BK-03: F32 override lost -Infinity');
+
+  // Inferred float lane: a fractional value forces F32, the sentinels ride it.
+  const inf = new Reader(bake([{ v: 1.5 }, { v: NaN }, { v: -0 }, { v: Infinity }, { v: -Infinity }]));
+  check(Number.isNaN(inf.get(1, 'v')), () => 't1.BK-03: inferred F32 lost NaN');
+  check(Object.is(inf.get(2, 'v'), -0), () => 't1.BK-03: inferred F32 lost -0');
+  check(inf.get(3, 'v') === Infinity, () => 't1.BK-03: inferred F32 lost +Infinity');
+  check(inf.get(4, 'v') === -Infinity, () => 't1.BK-03: inferred F32 lost -Infinity');
 }

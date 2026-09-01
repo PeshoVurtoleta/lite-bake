@@ -29,9 +29,13 @@
  * are DYNAMICALLY imported here AFTER the check (static imports would hoist past
  * it and make the exit-2 path unreachable).
  *
- * Controls: `BAKE_TORTURE_BREAK=1 node --expose-gc test/torture.mjs` injects a
- * retained allocation into the t6 hot loop and must exit non-zero. A gate that
- * cannot fail is decorative. Replay a failing seed with
+ * Controls: `BAKE_TORTURE_BREAK=1 node --expose-gc test/torture.mjs` must exit
+ * non-zero. Under a normal top-to-bottom run t5's oracle-misapply canary trips
+ * first (it expects a stored 0 where the strict default refuses a non-number, so
+ * the differential comparison diverges and dies); t6's retained-allocation
+ * injection into its hot loop remains live behind it (and is what t9's Control 1
+ * exercises in-process), so the alloc gate is still provably able to fail. A gate
+ * that cannot fail is decorative. Replay a failing seed with
  * `TORTURE_SEED=<n> node --expose-gc test/torture.mjs`.
  *
  * @license MIT

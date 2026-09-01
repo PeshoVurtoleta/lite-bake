@@ -18,14 +18,14 @@ import { bake, Reader, Types } from '../src/index.js';
 
 describe('bake() input validation', () => {
   test('throws on empty array', () => {
-    assert.throws(() => bake([]), /non-empty/);
+    assert.throws(() => bake([]), (e) => e.code === 'E_INPUT' && /non-empty/.test(e.message));
   });
 
   test('throws on non-array', () => {
-    assert.throws(() => bake(null),      /expected non-empty array/);
-    assert.throws(() => bake(undefined), /expected non-empty array/);
-    assert.throws(() => bake({}),        /expected non-empty array/);
-    assert.throws(() => bake('nope'),    /expected non-empty array/);
+    assert.throws(() => bake(null),      (e) => e.code === 'E_INPUT');
+    assert.throws(() => bake(undefined), (e) => e.code === 'E_INPUT');
+    assert.throws(() => bake({}),        (e) => e.code === 'E_INPUT');
+    assert.throws(() => bake('nope'),    (e) => e.code === 'E_INPUT');
   });
 
   test('accepts a single record', () => {
@@ -77,8 +77,12 @@ describe('type inference', () => {
     assert.equal(pickType([{v:1},{v:1.5}], 'v'), Types.F32);
   });
 
-  test('non-numeric field → F32 (stored as 0)', () => {
-    const b = bake([{s:'hi'},{s:'world'}]);
+  test('non-numeric field: default refuses, coerce:zero stores F32 zeros', () => {
+    // Default is strict: a string value is not a number and refuses.
+    assert.throws(() => bake([{s:'hi'},{s:'world'}]),
+      (e) => e.code === 'E_NON_NUMERIC');
+    // coerce:'zero' restores 1.0.x leniency: non-numbers land as 0 in an F32 lane.
+    const b = bake([{s:'hi'},{s:'world'}], { coerce: 'zero' });
     const f = b.schema.find(f => f.name === 's');
     assert.equal(f.type, Types.F32);
     const r = new Reader(b);
@@ -86,12 +90,14 @@ describe('type inference', () => {
     assert.equal(r.get(1, 's'), 0);
   });
 
-  test('NaN and Infinity ignored by inference, stored as 0 for ints', () => {
-    // NaN / Infinity aren't finite, so inference skips them. If no finite
-    // number was seen, field falls back to F32 (then non-finite → 0 via +v||0).
+  test('NaN and Infinity are numbers: preserved, not zeroed', () => {
+    // NaN / Infinity aren't finite, so inference skips them for range purposes
+    // and the column falls back to F32. But they ARE numbers, so the value door
+    // writes them straight through: NaN stays NaN, Infinity stays Infinity.
     const b = bake([{v: NaN}, {v: Infinity}]);
     const r = new Reader(b);
-    assert.equal(r.get(0, 'v'), 0);
+    assert.ok(Number.isNaN(r.get(0, 'v')));
+    assert.equal(r.get(1, 'v'), Infinity);
   });
 });
 
@@ -168,8 +174,12 @@ describe('round-trip correctness', () => {
     }
   });
 
-  test('null/undefined values become 0', () => {
-    const b = bake([{ v: null }, { v: undefined }, { v: 5 }]);
+  test('null/undefined values: default refuses, coerce:zero stores 0', () => {
+    // Default: null is not a number -> refuse (null is not zero, suite law).
+    assert.throws(() => bake([{ v: null }, { v: undefined }, { v: 5 }]),
+      (e) => e.code === 'E_NON_NUMERIC');
+    // coerce:'zero' restores the 1.0.x zero-fill.
+    const b = bake([{ v: null }, { v: undefined }, { v: 5 }], { coerce: 'zero' });
     const r = new Reader(b);
     assert.equal(r.get(0, 'v'), 0);
     assert.equal(r.get(1, 'v'), 0);
@@ -252,22 +262,25 @@ describe('schema overrides', () => {
 // ============================================================================
 
 describe('opts.validate', () => {
-  test('off by default: heterogeneous records silently coerce', () => {
-    // Without validate, extra keys are ignored, missing keys become 0.
-    assert.doesNotThrow(() => bake([{ x: 1 }, { x: 2, extra: 99 }]));
+  test('strict by default: heterogeneous records refuse, coerce:zero softens', () => {
+    // Default is now strict: an extra key refuses (E_UNEXPECTED_FIELD).
+    assert.throws(() => bake([{ x: 1 }, { x: 2, extra: 99 }]),
+      (e) => e.code === 'E_UNEXPECTED_FIELD');
+    // coerce:'zero' restores 1.0.x: extra keys dropped, missing keys read 0.
+    assert.doesNotThrow(() => bake([{ x: 1 }, { x: 2, extra: 99 }], { coerce: 'zero' }));
   });
 
   test('throws when validate:true and record missing a field', () => {
     assert.throws(
       () => bake([{ x: 1, y: 2 }, { x: 3 }], { validate: true }),
-      /missing field 'y'/
+      (e) => e.code === 'E_MISSING_FIELD' && /missing field 'y'/.test(e.message)
     );
   });
 
   test('throws when validate:true and record has unknown field', () => {
     assert.throws(
       () => bake([{ x: 1 }, { x: 2, y: 3 }], { validate: true }),
-      /unknown field 'y'/
+      (e) => e.code === 'E_UNEXPECTED_FIELD' && /unknown field 'y'/.test(e.message)
     );
   });
 
@@ -296,13 +309,13 @@ describe('Reader offset helpers', () => {
 
   test('offsetF32 throws on wrong-type field', () => {
     const r = mkReader();
-    assert.throws(() => r.offsetF32('tag'), /wrong type/);
+    assert.throws(() => r.offsetF32('tag'), (e) => e.code === 'R_WRONG_TYPE');
   });
 
   test('offsetU8 works, throws on non-8-bit', () => {
     const r = mkReader();
     assert.equal(r.offsetU8('tag'), r.offsetBytes('tag'));
-    assert.throws(() => r.offsetU8('id'), /not 8-bit/);
+    assert.throws(() => r.offsetU8('id'), (e) => e.code === 'R_WRONG_TYPE');
   });
 
   test('offsetU32 and offsetI32 both accept 32-bit int fields', () => {
@@ -313,9 +326,9 @@ describe('Reader offset helpers', () => {
 
   test('unknown field name throws with useful message', () => {
     const r = mkReader();
-    assert.throws(() => r.offsetF32('nope'),  /unknown field/);
-    assert.throws(() => r.offsetBytes('nope'), /unknown field/);
-    assert.throws(() => r.get(0, 'nope'),     /unknown field/);
+    assert.throws(() => r.offsetF32('nope'),  (e) => e.code === 'R_UNKNOWN_FIELD');
+    assert.throws(() => r.offsetBytes('nope'), (e) => e.code === 'R_UNKNOWN_FIELD');
+    assert.throws(() => r.get(0, 'nope'),     (e) => e.code === 'R_UNKNOWN_FIELD');
   });
 
   test('row(i) returns an object with all declared fields', () => {
