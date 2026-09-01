@@ -6,19 +6,22 @@
  *     node --expose-gc test/torture.mjs        -> prints exactly "ok", exit 0
  *     npm run torture
  *
- * Ten tiers share one shape (see ROADMAP.md section 3). B0 stands up the harness
- * and wires the tiers this package needs now:
+ * Ten tiers share one shape (see ROADMAP.md section 3). The harness wires the
+ * tiers this package needs now:
  *
- *     t0  metamorphic bake/read laws   t1  degenerate values (stub -> B1/B3)
+ *     t0  metamorphic bake/read laws   t1  degenerate values (live -- B1)
  *     t2  layout laws over schema space t3  adversarial baked objects (stub -> B2)
- *     t4  API abuse (stub -> B1/B2)     t5  differential fuzz (stub -> B1)
+ *     t4  API abuse (live -- B1)        t5  differential fuzz (live -- B1)
  *     t6  the zero-alloc gate           t7  soak + retention witness
- *     t8  cross-package parity (stub -> B4)  t9  controls (must be able to fail)
+ *     t8  cross-package parity (stub -> B4)  t9  controls + inventory gate
  *
- * Live now: t0, t2, t6, t7, t9. Stubs (t1, t3, t4, t5, t8) register the thirteen
- * reproduced findings BK-01..BK-13 as `todo`s that must still reproduce; each
- * fills in as B1..B4 land. t8 is an inert prose marker until the lite-bake-stream
- * devDep and the XP-01/XP-02 pins arrive in B4.
+ * Live now: t0, t1, t2, t4, t5, t6, t7, t9. t5 is the fixed differential lane
+ * plus B6's hostile-name / shape / schema-cross lanes. The remaining stubs (t3,
+ * t8) and the property tiers still register the open reproduced findings as
+ * `todo`s that must keep reproducing; each fills in as B2/B4 land. t8 is an inert
+ * prose marker until the lite-bake-stream devDep and the XP-01/XP-02 pins arrive
+ * in B4. t9 now also hosts the error-code inventory gate (Control 9): the
+ * thrown (src) vs declared (d.ts) vs pinned (test scan set) censuses must agree.
  *
  * lite-gc-profiler is one-measurement-at-a-time, so tiers run STRICTLY
  * SEQUENTIALLY -- never nested, never concurrent.
@@ -30,13 +33,17 @@
  * it and make the exit-2 path unreachable).
  *
  * Controls: `BAKE_TORTURE_BREAK=1 node --expose-gc test/torture.mjs` must exit
- * non-zero. Under a normal top-to-bottom run t5's oracle-misapply canary trips
- * first (it expects a stored 0 where the strict default refuses a non-number, so
- * the differential comparison diverges and dies); t6's retained-allocation
- * injection into its hot loop remains live behind it (and is what t9's Control 1
- * exercises in-process), so the alloc gate is still provably able to fail. A gate
- * that cannot fail is decorative. Replay a failing seed with
- * `TORTURE_SEED=<n> node --expose-gc test/torture.mjs`.
+ * non-zero. Under a normal top-to-bottom run t5's fixed-lane oracle-misapply
+ * canary trips first (it expects a stored 0 where the strict default refuses a
+ * non-number, so the differential comparison diverges and dies); t6's
+ * retained-allocation injection into its hot loop remains live behind it (and is
+ * what t9's Control 1 exercises in-process), so the alloc gate is still provably
+ * able to fail. The B6 lanes (hostile-name, shape, schema-cross) and the
+ * inventory gate ignore BREAK -- their failability is proven in-process by t9's
+ * Controls 9-12, each of which drives an oracle misapply knob and asserts the
+ * divergence is caught. The invariant is unchanged: a BREAK run exits non-zero, a
+ * normal run exits 0. A gate that cannot fail is decorative. Replay a failing
+ * seed with `TORTURE_SEED=<n> node --expose-gc test/torture.mjs`.
  *
  * @license MIT
  */

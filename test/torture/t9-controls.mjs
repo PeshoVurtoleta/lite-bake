@@ -14,9 +14,14 @@
  * lane in-process so a plain `npm run torture` already proves the gate bites.
  */
 
+import { readFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { bake, Reader, Types } from '../../src/index.js';
 import { createLeakTracker } from '@zakkster/lite-leak';
 import { runOpsGate, checkLayout, die, todoIds } from './harness.mjs';
+import { extractThrown, extractDeclared, extractPinned, diffInventory } from './inventory.mjs';
+import { hostileOracle, shapeOracle, crossOracle } from './t5-fuzz.mjs';
 
 const NOOP = function () {};
 
@@ -144,5 +149,102 @@ export function run() {
   }
   if (Object.is(cell, 1)) {
     die('t9 control: the t5 cell comparison missed a wrong-for-one-class expectation (true->1)');
+  }
+
+  // --- Control 9: the inventory gate. The THROWN (src), DECLARED (d.ts) and
+  // PINNED (test scan set) code censuses must agree; diffInventory over the real
+  // tree returns empty. This is both the non-vacuity run and the standing gate.
+  // Three fail-arms then prove the diff bites each direction. ------------------
+  const here = dirname(fileURLToPath(import.meta.url));   // test/torture
+  const root = join(here, '..', '..');                    // package root
+  const srcText = readFileSync(join(root, 'src', 'index.js'), 'utf8');
+  const dtsText = readFileSync(join(root, 'types', 'index.d.ts'), 'utf8');
+  const scanPaths = [];
+  const testDir = join(root, 'test');
+  const dtEntries = readdirSync(testDir);
+  for (let i = 0; i < dtEntries.length; i++) {
+    if (dtEntries[i].endsWith('.test.js')) scanPaths.push(join(testDir, dtEntries[i]));
+  }
+  const tortureEntries = readdirSync(here);
+  for (let i = 0; i < tortureEntries.length; i++) {
+    const f = tortureEntries[i];
+    if (f.endsWith('.mjs') && f !== 'inventory.mjs') scanPaths.push(join(here, f));
+  }
+  const scanTexts = scanPaths.map((p) => readFileSync(p, 'utf8'));
+
+  const thrown = extractThrown(srcText);
+  const declared = extractDeclared(dtsText);
+  const pinned = extractPinned(scanTexts);
+  const violations = diffInventory(thrown, declared, pinned);
+  if (violations.length !== 0) {
+    die('t9 control 9: inventory gate is red -- ' + violations.join('; '));
+  }
+  // 9a: an undeclared, unpinned phantom throw must trip the diff.
+  if (diffInventory(thrown.concat(['E_PHANTOM']), declared, pinned).length === 0) {
+    die('t9 control 9a: an injected phantom throw did not trip the inventory diff');
+  }
+  // 9b: dropping a declaration leaves a live throw undeclared -- must trip.
+  const cutDeclared = declared.filter((c) => c !== 'E_BAD_TYPE');
+  if (diffInventory(thrown, cutDeclared, pinned).length === 0) {
+    die('t9 control 9b: removing E_BAD_TYPE from the declared set did not trip the inventory diff');
+  }
+  // 9c: an alien (double-quoted) pin spelling must stay invisible to extractPinned.
+  const alienText = 'if (e.code === "E_ALIEN_SPELL") { /* double-quoted, not a pin */ }';
+  if (extractPinned([alienText]).indexOf('E_ALIEN_SPELL') !== -1) {
+    die('t9 control 9c: extractPinned recognised an alien (double-quoted) spelling');
+  }
+
+  // --- Control 10: the hostile-name oracle. A dropped prototype-named field
+  // ('constructor') survives the missing check via inheritance and refuses at
+  // the value door (E_NON_NUMERIC), NOT E_MISSING_FIELD -- the BK-29 divergence.
+  // breakHostile (hasOwnProperty missing check) predicts E_MISSING_FIELD and so
+  // MUST diverge from the actual bake; knob off MUST match. --------------------
+  const hRec0 = {}; hRec0['constructor'] = 1; hRec0['x'] = 2;   // constructor is an own numeric field
+  const hRec1 = {}; hRec1['x'] = 3;                             // constructor dropped -> inherited Function
+  const hCorpus = [hRec0, hRec1];
+  let hActual = null;
+  try { bake(hCorpus); } catch (e) { hActual = e.code; }
+  const hOff = hostileOracle(hCorpus, 'default', false);
+  if (hOff.throws !== hActual) {
+    die('t9 control 10: hostileOracle knob-off predicted ' + hOff.throws + ' but bake gave ' + hActual);
+  }
+  const hOn = hostileOracle(hCorpus, 'default', true);
+  if (hOn.throws === hActual) {
+    die('t9 control 10: breakHostile did not diverge from actual bake (both ' + hActual + ')');
+  }
+
+  // --- Control 11: the shape oracle. With a non-record at index 3, the full
+  // pre-pass refuses E_NOT_A_RECORD before any per-record drift is seen.
+  // breakShape (lazy per-index) reaches the drift at index 1 first and predicts
+  // E_UNEXPECTED_FIELD, so it MUST diverge; knob off MUST match. ---------------
+  const sValid1 = { sa: 1, sb: -200, sc: 0.5 };
+  const sDrift = { sa: 1, sb: -200, sc: 0.5, extra: 9 };   // unexpected field at index 1
+  const sValid2 = { sa: 2, sb: -201, sc: 1.5 };
+  const sCorpus = [sValid1, sDrift, sValid2, 42];
+  let sActual = null;
+  try { bake(sCorpus); } catch (e) { sActual = e.code; }
+  const sOff = shapeOracle(sCorpus, 'default', false);
+  if (sOff.throws !== sActual) {
+    die('t9 control 11: shapeOracle knob-off predicted ' + sOff.throws + ' but bake gave ' + sActual);
+  }
+  const sOn = shapeOracle(sCorpus, 'default', true);
+  if (sOn.throws === sActual) {
+    die('t9 control 11: breakShape did not diverge from actual bake (both ' + sActual + ')');
+  }
+
+  // --- Control 12: the cross oracle. An F32 lane fed 0.1 stores Math.fround(0.1).
+  // breakCross treats F32 as exact F64 and predicts 0.1, so it MUST diverge from
+  // the frounded cell; knob off MUST match. -----------------------------------
+  const cSchema = { g0: Types.F32 };
+  const cCorpus = [{ g0: 0.1 }, { g0: 0.2 }];
+  const cReader = new Reader(bake(cCorpus, { schema: cSchema }));
+  const cCell = cReader.get(0, 'g0');   // Math.fround(0.1)
+  const cOff = crossOracle(cSchema, cCorpus, 'default', false);
+  if (!Object.is(cOff.values[0].g0, cCell)) {
+    die('t9 control 12: crossOracle knob-off did not match the frounded cell (' + cOff.values[0].g0 + ' vs ' + cCell + ')');
+  }
+  const cOn = crossOracle(cSchema, cCorpus, 'default', true);
+  if (Object.is(cOn.values[0].g0, cCell)) {
+    die('t9 control 12: breakCross did not diverge from the frounded cell (both ' + cCell + ')');
   }
 }

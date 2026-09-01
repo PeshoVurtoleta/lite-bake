@@ -16,6 +16,12 @@
  *   4. field-order         -- read-by-name is invariant to key insertion order;
  *                            byte-identity holds when field sizes are distinct
  *   5. offset agreement   -- offsetXxx(f) * size === offsetBytes(f) for every field
+ *   6. mode equivalence   -- over the SAME clean corpus + schema, the default
+ *                            strict, validate:true, and coerce:'zero' modes all
+ *                            emit byte-identical buffers and identical schema
+ *                            entries (name/type/offset). This pins the 0001
+ *                            table's same/same column as bytes: no mode changes
+ *                            the layout or the stored values of a clean corpus.
  */
 
 import { bake, Reader, Types } from '../../src/index.js';
@@ -164,5 +170,37 @@ export function run() {
     const elemBytes = offsetElem(r, f);
     check(elemBytes === r.offsetBytes(f.name),
       () => `t0.offset: field '${f.name}' offsetXxx*size ${elemBytes} != offsetBytes ${r.offsetBytes(f.name)} (seed=${SEED})`);
+  }
+
+  // --- Law 6: mode equivalence. The same clean corpus + SCHEMA baked under the
+  // default strict mode, validate:true, and coerce:'zero' must produce
+  // byte-identical buffers and identical schema entries. The 0001 table's
+  // same/same column, pinned as bytes.
+  const mStrict = bake(recs, { schema: SCHEMA });
+  const mValidate = bake(recs, { schema: SCHEMA, validate: true });
+  const mCoerce = bake(recs, { schema: SCHEMA, coerce: 'zero' });
+  const mBufs = [
+    ['validate', mValidate],
+    ['coerce', mCoerce],
+  ];
+  const uStrict = new Uint8Array(mStrict.buffer);
+  for (let mi = 0; mi < mBufs.length; mi++) {
+    const label = mBufs[mi][0];
+    const baked = mBufs[mi][1];
+    check(baked.buffer.byteLength === mStrict.buffer.byteLength,
+      () => `t0.mode-equiv: ${label} buffer length ${baked.buffer.byteLength} != strict ${mStrict.buffer.byteLength} (seed=${SEED})`);
+    const uOther = new Uint8Array(baked.buffer);
+    for (let k = 0; k < uStrict.length; k++) {
+      check(uStrict[k] === uOther[k],
+        () => `t0.mode-equiv: ${label} byte ${k} diverged ${uOther[k]} != strict ${uStrict[k]} (seed=${SEED})`);
+    }
+    check(baked.schema.length === mStrict.schema.length,
+      () => `t0.mode-equiv: ${label} schema length ${baked.schema.length} != strict ${mStrict.schema.length} (seed=${SEED})`);
+    for (let k = 0; k < mStrict.schema.length; k++) {
+      const a = mStrict.schema[k];
+      const b = baked.schema[k];
+      check(a.name === b.name && a.type === b.type && a.offset === b.offset,
+        () => `t0.mode-equiv: ${label} schema entry ${k} diverged (seed=${SEED})`);
+    }
   }
 }

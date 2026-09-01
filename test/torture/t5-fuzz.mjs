@@ -1,30 +1,48 @@
 /**
  * t5 -- differential fuzz vs the decisions/0001 value-policy oracle. LIVE (B1).
  *
- * A seeded generator emits per-iteration corpora mixing every B1 value class:
- * in-envelope finite numbers, the float sentinels (NaN / -0 / +/-Infinity), and
- * the non-number classes (string, numeric-string, boolean, null, undefined,
- * plain object, array), plus per-record structural drift (absent key, extra
- * key). Each corpus is baked under all three modes -- default, validate:true,
- * coerce:'zero'.
+ * run() composes five lanes IN THIS ORDER:
+ *   runEnforcedChecks() -- the BK-04 enforced checks + the BREAK canary. Under
+ *     BAKE_TORTURE_BREAK the fixed-lane oracle misapplies the non-number class in
+ *     the strict modes and the canary diverges and dies first (this is what makes
+ *     t5 provably able to fail).
+ *   runFixedLane()      -- the original 300-iter differential fuzz over a fixed
+ *     four-field schema (F64/F32/I16/U8). Its seed derivation and stream
+ *     consumption are unchanged, so a pre-B6 TORTURE_SEED replays byte-for-byte.
+ *   runHostileNameLane()  -- prototype-named fields (constructor/toString/
+ *     hasOwnProperty/valueOf/__proto__) through both the override-present and
+ *     override-absent arms.
+ *   runShapeLane()        -- non-record splices, empty record 0, empty-record
+ *     twins at i>0.
+ *   runSchemaCrossLane()  -- random 1..16-field schemas over all eight Types with
+ *     explicit overrides and a wide numeric + drift value mix.
  *
- * The oracle is a hand-written function that applies the 0001 table by
- * inspecting the actual corpus: it returns {throws:'<code>'} (first offender
- * row-major: record order, then keyset order for a missing field, enumeration
- * order for an extra/value) or the expected per-cell values (Math.fround for F32
- * lanes, exact for F64, the CURRENT mask for int lanes -- B1 leaves BK-01/02).
- * A fixed schema override pins the lane types so inference (B3's subject) never
- * enters the comparison.
+ * The three B6 lanes each derive their own PRNG with a distinct documented XOR
+ * constant on SEED, and each carries a pure exported oracle with a default-off
+ * misapply knob so t9's Controls 10-12 can prove the lane fails. The B6 lanes do
+ * NOT read BREAK: under a normal top-to-bottom run the fixed-lane canary trips
+ * first, so the B6 lanes never see BREAK in the full harness -- their failability
+ * is proven in-process by t9, not by the BREAK path.
  *
- * BREAK lane: under BAKE_TORTURE_BREAK the oracle deliberately misapplies the
- * non-number class in the strict modes (expects a stored 0 where bake refuses),
- * so a canary corpus forces a divergence and the tier dies -- proving t5 can
- * fail. BK-04 is closed here too (its old todo is deleted) with an explicit
- * enforced check.
+ * The oracle is a hand-written function that applies the 0001 table by inspecting
+ * the actual corpus: it returns {throws:'<code>'} (first offender row-major:
+ * record order, then keyset order for a missing field, enumeration order for an
+ * extra/value) or the expected per-cell values (Math.fround for F32 lanes, exact
+ * for F64, the CURRENT mask for int lanes). Fixed schema overrides pin lane types
+ * so inference (B3's subject) never enters the comparison.
+ *
+ * Imports stay minimal: { bake, Reader, Types } from src plus harness helpers.
+ * LiteBakeError is NEVER imported -- a caught error's code is read as a plain
+ * property, so this module still LOADS against a pre-B1 src.
  */
 
 import { bake, Reader, Types } from '../../src/index.js';
 import { makePrng, SEED, check, die, BREAK } from './harness.mjs';
+
+// Field byte sizes indexed by the Types enum (F32=0,F64=1,I32=2,I16=3,I8=4,
+// U32=5,U16=6,U8=7). Duplicated locally so this module imports nothing but the
+// public surface from src.
+const BYTES = [4, 8, 4, 2, 1, 4, 2, 1];
 
 // Fixed lanes, distinct byte sizes so the write-loop's size-descending sort
 // equals insertion == enumeration order. Covers F64, F32, a signed int, an
@@ -42,11 +60,18 @@ const KEYSET = Object.create(null);
 for (let i = 0; i < FIELD_NAMES.length; i++) KEYSET[FIELD_NAMES[i]] = true;
 
 // What the lane stores for a number v -- exactly what Reader.get reads back.
-function laneStore(type, v) {
+// Generalized to all eight types (mirrors src 314-322). The four fixed-lane
+// cases (F64/F32/I16/U8) are byte-identical to the pre-B6 version. `breakFround`
+// is the cross-lane misapply knob: when set, an F32 lane is treated as exact F64.
+function laneStore(type, v, breakFround) {
   switch (type) {
     case Types.F64: return v;
-    case Types.F32: return Math.fround(v);
+    case Types.F32: return breakFround ? v : Math.fround(v);
+    case Types.I32: return v | 0;
     case Types.I16: { const t = v | 0; return (t << 16) >> 16; }
+    case Types.I8:  { const t = v | 0; return (t << 24) >> 24; }
+    case Types.U32: return v >>> 0;
+    case Types.U16: return v & 0xffff;
     case Types.U8:  return v & 0xff;
   }
   return v;
@@ -103,8 +128,8 @@ function genCorpus(prng) {
   return recs;
 }
 
-// The oracle. strict = default/validate; breakOn disables ONLY the value-door
-// non-number check (the deliberate BREAK misapplication).
+// The fixed-lane oracle. strict = default/validate; breakOn disables ONLY the
+// value-door non-number check (the deliberate BREAK misapplication).
 function oracle(records, strict, breakOn) {
   if (strict) {
     for (let i = 0; i < records.length; i++) {
@@ -181,7 +206,433 @@ function caught(fn) {
 const MODES = ['default', 'validate', 'coerce'];
 const ITERS = 300;
 
-export function run() {
+/* -------------------------------------------------------------------------- *
+ * Shared B6 oracle core -- replicates the src door order exactly.
+ *
+ * Precedence (mirrors src bake()):
+ *   P1 full shape pre-pass over ALL records (a non-record at index 3 beats drift
+ *      at index 1) -> E_NOT_A_RECORD
+ *   P2 record 0 has zero own keys -> E_EMPTY_RECORD
+ *   P3 (cross lane) overrides -- the lanes always pass VALID overrides, so the
+ *      oracle assumes them valid and models no E_UNKNOWN_FIELD/E_BAD_TYPE.
+ *   P4 per record in index order: if strict, extras in for..in order
+ *      (E_UNEXPECTED_FIELD); on own-count shortfall, missing in keys[] order via
+ *      the `in` operator (E_MISSING_FIELD); then values in the size-sorted field
+ *      order (stable sort by BYTES desc, replicating src:252): a non-number is
+ *      E_NON_NUMERIC (strict) or 0 (coerce), else laneStore(type, v).
+ *
+ * cfg knobs (all default off):
+ *   typeOf(name)  -> the resolved Types code for a field.
+ *   breakMissing  -> use hasOwnProperty for the missing check instead of `in`.
+ *   breakShape    -> evaluate P1 lazily per record index instead of as a pre-pass.
+ *   breakFround   -> treat the F32 lane as exact F64 (skip fround) in laneStore.
+ * -------------------------------------------------------------------------- */
+
+function notRecord(rec) {
+  return typeof rec !== 'object' || rec === null || Array.isArray(rec);
+}
+
+function inferType(records, key) {
+  let allInt = true, min = Infinity, max = -Infinity, sawNumber = false;
+  for (let i = 0; i < records.length; i++) {
+    const v = records[i][key];
+    if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+    sawNumber = true;
+    if (!Number.isInteger(v)) allInt = false;
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  if (!sawNumber || !allInt) return Types.F32;
+  if (min >= 0) {
+    if (max <= 0xff)   return Types.U8;
+    if (max <= 0xffff) return Types.U16;
+    return Types.U32;
+  }
+  if (min >= -0x80   && max <= 0x7f)   return Types.I8;
+  if (min >= -0x8000 && max <= 0x7fff) return Types.I16;
+  return Types.I32;
+}
+
+function coreOracle(records, mode, cfg) {
+  const strict = mode !== 'coerce';
+
+  // P1: full shape pre-pass over ALL records, unless breakShape defers it.
+  if (!cfg.breakShape) {
+    for (let i = 0; i < records.length; i++) {
+      if (notRecord(records[i])) return { throws: 'E_NOT_A_RECORD' };
+    }
+  }
+  // Under breakShape the pre-pass did not run; record 0 must still be a record.
+  if (cfg.breakShape && notRecord(records[0])) return { throws: 'E_NOT_A_RECORD' };
+
+  const keys = Object.keys(records[0]);
+  if (keys.length === 0) return { throws: 'E_EMPTY_RECORD' };  // P2
+
+  const keyset = Object.create(null);
+  for (let k = 0; k < keys.length; k++) keyset[keys[k]] = k;
+
+  // Resolve field types then replicate src:252 stable size-descending sort.
+  const fields = new Array(keys.length);
+  for (let k = 0; k < keys.length; k++) fields[k] = { name: keys[k], type: cfg.typeOf(keys[k]) };
+  fields.sort((a, b) => BYTES[b.type] - BYTES[a.type]);
+
+  // P4: per record in index order.
+  const rows = new Array(records.length);
+  for (let i = 0; i < records.length; i++) {
+    if (cfg.breakShape && notRecord(records[i])) return { throws: 'E_NOT_A_RECORD' };
+    const rec = records[i];
+
+    if (strict) {
+      for (const k in rec) {
+        if (keyset[k] === undefined) return { throws: 'E_UNEXPECTED_FIELD' };
+      }
+      let own = 0;
+      for (const k in rec) own++;
+      if (own < keys.length) {
+        for (let m = 0; m < keys.length; m++) {
+          // pins CURRENT behavior; the E_NON_NUMERIC-for-absent-prototype-named-
+          // field divergence from decisions/0001 is finding BK-29 (candidate) --
+          // its fix updates this branch, not before. breakMissing swaps the
+          // prototype-inclusive `in` for hasOwnProperty, which predicts
+          // E_MISSING_FIELD where src actually gives E_NON_NUMERIC.
+          const present = cfg.breakMissing
+            ? Object.prototype.hasOwnProperty.call(rec, keys[m])
+            : (keys[m] in rec);
+          if (!present) return { throws: 'E_MISSING_FIELD' };
+        }
+      }
+    }
+
+    const row = Object.create(null);
+    for (let k = 0; k < fields.length; k++) {
+      const f = fields[k];
+      let v = rec[f.name];
+      if (typeof v !== 'number') {
+        if (strict) return { throws: 'E_NON_NUMERIC' };
+        v = 0;
+      }
+      row[f.name] = laneStore(f.type, v, cfg.breakFround);
+    }
+    rows[i] = row;
+  }
+  return { values: rows };
+}
+
+/** Hostile-name lane oracle. Types resolve by inference (override == inferred). */
+export function hostileOracle(records, mode, breakHostile) {
+  return coreOracle(records, mode, {
+    typeOf: (name) => inferType(records, name),
+    breakMissing: !!breakHostile,
+    breakShape: false,
+    breakFround: false,
+  });
+}
+
+/** Shape lane oracle. Types resolve by inference (no override in the lane). */
+export function shapeOracle(records, mode, breakShape) {
+  return coreOracle(records, mode, {
+    typeOf: (name) => inferType(records, name),
+    breakMissing: false,
+    breakShape: !!breakShape,
+    breakFround: false,
+  });
+}
+
+/** Schema-cross oracle. Types resolve straight from the explicit override map. */
+export function crossOracle(schemaFields, records, mode, breakCross) {
+  return coreOracle(records, mode, {
+    typeOf: (name) => schemaFields[name],
+    breakMissing: false,
+    breakShape: false,
+    breakFround: !!breakCross,
+  });
+}
+
+/* -------------------------------------------------------------------------- *
+ * B6 lane machinery.
+ * -------------------------------------------------------------------------- */
+
+function laneFail(lane, mode, iter, detail) {
+  return 't5.' + lane + ' [' + mode + '] iter=' + iter + ': ' + detail + ' (seed=' + SEED + ')\n' +
+    '  replay: TORTURE_SEED=' + SEED + ' node --expose-gc test/torture.mjs';
+}
+
+// The seven recipe types (F64 excluded -- it is override-only, and no recipe
+// pins inference to it). Each recipe below pins inferType to its type.
+const RECIPE_TYPES = [Types.U8, Types.U16, Types.U32, Types.I8, Types.I16, Types.I32, Types.F32];
+
+function recipeValue(prng, type) {
+  switch (type) {
+    case Types.U8:  return prng() % 256;
+    case Types.U16: return 256 + (prng() % 1000);
+    case Types.U32: return 65536 + (prng() % 1000000);
+    case Types.I8:  return -(1 + (prng() % 127));
+    case Types.I16: return -129 - (prng() % 1000);
+    case Types.I32: return -32769 - (prng() % 100000);
+    case Types.F32: return (prng() % 200) - 100 + 0.5;
+  }
+  return 0;
+}
+
+// Set a field as an OWN key. Plain assignment already creates own enumerable
+// data properties for constructor/toString/valueOf/hasOwnProperty (they are
+// writable data props up the chain); __proto__ is the one accessor that must be
+// defined explicitly so it lands as an own data property and never hits the
+// prototype setter.
+function putOwn(rec, name, value) {
+  if (name === '__proto__') {
+    Object.defineProperty(rec, '__proto__',
+      { value: value, writable: true, enumerable: true, configurable: true });
+  } else {
+    rec[name] = value;
+  }
+}
+
+/* ---- hostile-name lane --------------------------------------------------- */
+
+const HOSTILE_POOL = ['constructor', 'toString', 'hasOwnProperty', 'valueOf', '__proto__', 'x', 'y'];
+
+function pickHostileSchema(prng) {
+  // Fisher-Yates a copy of the pool, take a 2..5 prefix, assign recipe types.
+  const pool = HOSTILE_POOL.slice();
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = prng() % (i + 1);
+    const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
+  }
+  const count = 2 + (prng() % 4);   // 2..5 fields
+  const names = pool.slice(0, count);
+  const types = new Array(count);
+  for (let k = 0; k < count; k++) types[k] = RECIPE_TYPES[prng() % RECIPE_TYPES.length];
+  return { names, types };
+}
+
+function hostileCell(prng, type) {
+  const r = prng() % 12;
+  if (r < 6) return recipeValue(prng, type);  // clean, in-recipe number
+  if (r === 6) return NaN;
+  if (r === 7) return -0;
+  if (r === 8) return (prng() % 2) ? Infinity : -Infinity;
+  return NON_NUMBERS[prng() % NON_NUMBERS.length];
+}
+
+function buildHostileRecord(prng, names, types, isFirst) {
+  const rec = {};
+  let dropIdx = -1;
+  if (!isFirst && (prng() % 4) === 0) dropIdx = prng() % names.length;
+  for (let k = 0; k < names.length; k++) {
+    if (k === dropIdx) continue;
+    const v = isFirst ? recipeValue(prng, types[k]) : hostileCell(prng, types[k]);
+    putOwn(rec, names[k], v);
+  }
+  if (!isFirst && (prng() % 5) === 0) {
+    const extra = HOSTILE_POOL[prng() % HOSTILE_POOL.length];
+    if (names.indexOf(extra) === -1) putOwn(rec, extra, prng() % 100);
+  }
+  return rec;
+}
+
+function optsAbsent(mode) {
+  if (mode === 'validate') return { validate: true };
+  if (mode === 'coerce')   return { coerce: 'zero' };
+  return {};
+}
+
+function optsPresent(mode, override) {
+  if (mode === 'validate') return { schema: override, validate: true };
+  if (mode === 'coerce')   return { schema: override, coerce: 'zero' };
+  return { schema: override };
+}
+
+function compareHostile(iter, mode, arm, recs, names, opts, exp) {
+  let baked = null, err = null;
+  try { baked = bake(recs, opts); } catch (e) { err = e; }
+  if (exp.throws) {
+    check(!!err, () => laneFail('hostile', mode, iter, arm + ': expected throw ' + exp.throws + ' but bake succeeded'));
+    check(err.code === exp.throws, () => laneFail('hostile', mode, iter, arm + ': expected ' + exp.throws + ' got ' + err.code));
+    return;
+  }
+  check(!err, () => laneFail('hostile', mode, iter, arm + ': unexpected throw ' + (err && err.code)));
+  const r = new Reader(baked);
+  for (let i = 0; i < recs.length; i++) {
+    for (let k = 0; k < names.length; k++) {
+      const got = r.get(i, names[k]);
+      const want = exp.values[i][names[k]];
+      check(Object.is(got, want), () => laneFail('hostile', mode, iter,
+        arm + " record " + i + " field '" + names[k] + "' got " + String(got) + ' want ' + String(want)));
+    }
+  }
+}
+
+export function runHostileNameLane() {
+  const prng = makePrng((SEED ^ 0x2545f491) >>> 0);   // distinct hostile-lane XOR
+  for (let iter = 0; iter < 30; iter++) {
+    const sch = pickHostileSchema(prng);
+    const names = sch.names, types = sch.types;
+    const n = 2 + (prng() % 4);   // 2..5 records
+    const recs = new Array(n);
+    for (let i = 0; i < n; i++) recs[i] = buildHostileRecord(prng, names, types, i === 0);
+
+    // Own-ness assertion once per corpus: record 0 is canonical (all fields).
+    for (let k = 0; k < names.length; k++) {
+      check(Object.prototype.hasOwnProperty.call(recs[0], names[k]),
+        () => laneFail('hostile', '-', iter, "field '" + names[k] + "' is not an own key of record 0"));
+    }
+
+    const override = Object.create(null);
+    for (let k = 0; k < names.length; k++) override[names[k]] = types[k];
+
+    for (let m = 0; m < MODES.length; m++) {
+      const mode = MODES[m];
+      const exp = hostileOracle(recs, mode, false);
+      compareHostile(iter, mode, 'absent', recs, names, optsAbsent(mode), exp);
+      compareHostile(iter, mode, 'present', recs, names, optsPresent(mode, override), exp);
+    }
+  }
+}
+
+/* ---- shape lane ---------------------------------------------------------- */
+
+const SHAPE_NAMES = ['sa', 'sb', 'sc'];   // distinct sizes: U8(1), I16(2), F32(4)
+const SHAPE_BAD = [null, [1, 2], 42, 'str', true];
+
+function buildShapeRecord(prng) {
+  return {
+    sa: prng() % 256,               // U8
+    sb: -129 - (prng() % 1000),     // I16
+    sc: (prng() % 200) - 100 + 0.5, // F32
+  };
+}
+
+function compareShape(iter, mode, recs, exp) {
+  let baked = null, err = null;
+  try { baked = bake(recs, optsAbsent(mode)); } catch (e) { err = e; }
+  if (exp.throws) {
+    check(!!err, () => laneFail('shape', mode, iter, 'expected throw ' + exp.throws + ' but bake succeeded'));
+    check(err.code === exp.throws, () => laneFail('shape', mode, iter, 'expected ' + exp.throws + ' got ' + err.code));
+    return;
+  }
+  check(!err, () => laneFail('shape', mode, iter, 'unexpected throw ' + (err && err.code)));
+  const r = new Reader(baked);
+  for (let i = 0; i < recs.length; i++) {
+    for (let k = 0; k < SHAPE_NAMES.length; k++) {
+      const got = r.get(i, SHAPE_NAMES[k]);
+      const want = exp.values[i][SHAPE_NAMES[k]];
+      check(Object.is(got, want), () => laneFail('shape', mode, iter,
+        "record " + i + " field '" + SHAPE_NAMES[k] + "' got " + String(got) + ' want ' + String(want)));
+    }
+  }
+}
+
+export function runShapeLane() {
+  const prng = makePrng((SEED ^ 0x9e3779b1) >>> 0);   // distinct shape-lane XOR
+  for (let iter = 0; iter < 60; iter++) {
+    const n = 3 + (prng() % 4);   // 3..6 records
+    const recs = new Array(n);
+    for (let i = 0; i < n; i++) recs[i] = buildShapeRecord(prng);
+
+    const kind = prng() % 4;
+    if (kind === 1) {
+      const j = prng() % n;                          // splice a non-record (incl index 0)
+      recs[j] = SHAPE_BAD[prng() % SHAPE_BAD.length];
+    } else if (kind === 2) {
+      recs[0] = {};                                  // empty record 0 -> E_EMPTY_RECORD (all modes)
+    } else if (kind === 3 && n > 1) {
+      const j = 1 + (prng() % (n - 1));              // empty twin at i>0
+      recs[j] = {};
+    }
+    // kind 0 (or the n===1 fallthrough) leaves a clean corpus -- the non-vacuity
+    // case that must pass in every mode.
+
+    for (let m = 0; m < MODES.length; m++) {
+      const mode = MODES[m];
+      const exp = shapeOracle(recs, mode, false);
+      compareShape(iter, mode, recs, exp);
+    }
+  }
+}
+
+/* ---- schema-cross lane --------------------------------------------------- */
+
+const ALL_TYPES = [Types.F32, Types.F64, Types.I32, Types.I16, Types.I8, Types.U32, Types.U16, Types.U8];
+
+function wideNumber(prng) {
+  const r = prng() % 5;
+  if (r === 0) return (prng() % 200000) - 100000;           // wide int, out of small ranges
+  if (r === 1) return ((prng() % 200000) - 100000) * 0.5;   // fractional
+  if (r === 2) return prng() >>> 0;                         // up to ~4e9
+  if (r === 3) return -((prng() >>> 0) % 2000000000);       // large negative
+  return ((prng() % 2000) - 1000) + 0.25;                   // small fractional
+}
+
+function crossCell(prng) {
+  const r = prng() % 14;
+  if (r < 7) return wideNumber(prng);
+  if (r === 7) return NaN;
+  if (r === 8) return -0;
+  if (r === 9) return (prng() % 2) ? Infinity : -Infinity;
+  return NON_NUMBERS[prng() % NON_NUMBERS.length];
+}
+
+function buildCrossRecord(prng, names, isFirst) {
+  const rec = {};
+  let dropIdx = -1;
+  if (!isFirst && (prng() % 5) === 0) dropIdx = prng() % names.length;
+  for (let k = 0; k < names.length; k++) {
+    if (k === dropIdx) continue;
+    rec[names[k]] = isFirst ? wideNumber(prng) : crossCell(prng);
+  }
+  if (!isFirst && (prng() % 6) === 0) rec['x' + (prng() % 4)] = prng() % 100;   // extra (not g-named)
+  return rec;
+}
+
+function compareCross(iter, mode, schema, recs, names, exp) {
+  const opts = mode === 'validate' ? { schema: schema, validate: true }
+    : mode === 'coerce' ? { schema: schema, coerce: 'zero' }
+    : { schema: schema };
+  let baked = null, err = null;
+  try { baked = bake(recs, opts); } catch (e) { err = e; }
+  if (exp.throws) {
+    check(!!err, () => laneFail('cross', mode, iter, 'expected throw ' + exp.throws + ' but bake succeeded'));
+    check(err.code === exp.throws, () => laneFail('cross', mode, iter, 'expected ' + exp.throws + ' got ' + err.code));
+    return;
+  }
+  check(!err, () => laneFail('cross', mode, iter, 'unexpected throw ' + (err && err.code) + ' (' + (err && err.message) + ')'));
+  const r = new Reader(baked);
+  for (let i = 0; i < recs.length; i++) {
+    for (let k = 0; k < names.length; k++) {
+      const got = r.get(i, names[k]);
+      const want = exp.values[i][names[k]];
+      check(Object.is(got, want), () => laneFail('cross', mode, iter,
+        "record " + i + " field '" + names[k] + "' got " + String(got) + ' want ' + String(want)));
+    }
+  }
+}
+
+export function runSchemaCrossLane() {
+  const prng = makePrng((SEED ^ 0x27d4eb2f) >>> 0);   // distinct cross-lane XOR
+  for (let iter = 0; iter < 120; iter++) {
+    const nf = 1 + (prng() % 16);   // 1..16 fields
+    const names = new Array(nf);
+    const schema = {};
+    for (let k = 0; k < nf; k++) {
+      names[k] = 'g' + k;
+      schema[names[k]] = ALL_TYPES[prng() % ALL_TYPES.length];
+    }
+    const n = 2 + (prng() % 4);   // 2..5 records
+    const recs = new Array(n);
+    for (let i = 0; i < n; i++) recs[i] = buildCrossRecord(prng, names, i === 0);
+
+    for (let m = 0; m < MODES.length; m++) {
+      const mode = MODES[m];
+      const exp = crossOracle(schema, recs, mode, false);
+      compareCross(iter, mode, schema, recs, names, exp);
+    }
+  }
+}
+
+/* ---- enforced checks + fixed lane (verbatim behavior) -------------------- */
+
+export function runEnforcedChecks() {
   // BK-04 CLOSED (B1): {v:true} refuses by default; coerce stores 0, never 1.
   const e04 = caught(() => bake([{ v: true }]));
   check(!!e04 && e04.code === 'E_NON_NUMERIC',
@@ -197,11 +648,22 @@ export function run() {
     { fb: 2.5, fa: Math.fround(0.5), ic: 50, ib: true },
   ];
   compareCorpus(-1, 'default', canary);
+}
 
-  // Seeded differential fuzz -- its own SEED-derived stream.
+export function runFixedLane() {
+  // Seeded differential fuzz -- its own SEED-derived stream. This derivation and
+  // stream consumption are frozen so pre-B6 TORTURE_SEED replays reproduce.
   const prng = makePrng((SEED ^ 0x517cc1b7) >>> 0);
   for (let iter = 0; iter < ITERS; iter++) {
     const corpus = genCorpus(prng);
     for (let m = 0; m < MODES.length; m++) compareCorpus(iter, MODES[m], corpus);
   }
+}
+
+export function run() {
+  runEnforcedChecks();
+  runFixedLane();
+  runHostileNameLane();
+  runShapeLane();
+  runSchemaCrossLane();
 }
