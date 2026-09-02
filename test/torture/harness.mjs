@@ -181,12 +181,14 @@ export function checkLayout(baked) {
 /* -------------------------------------------------------------------------- *
  * Todo registry.
  *
- * The suite has no fix mechanism of its own (LiteBvh has none either), but this
- * package ships thirteen reproduced defects (BK-01..BK-13) whose fixes land in
- * B1..B4. Each is registered here as a `todo`: the probe body it was found with
- * runs and must STILL reproduce the defect. While it reproduces, the gate stays
- * neutral (no stdout, "ok" is preserved). The day a probe stops reproducing,
- * the todo fails the whole run and demands its promotion to an enforced check.
+ * The suite has no fix mechanism of its own (LiteBvh has none either). This
+ * package shipped thirteen reproduced defects (BK-01..BK-13) whose fixes landed
+ * across B1..B3; as of B3 all thirteen are promoted to enforced checks and the
+ * registry is DORMANT (no tier registers a todo anymore). The mechanism stays
+ * wired for future findings: a `todo` runs the probe body it was found with and
+ * must STILL reproduce the defect. While it reproduces, the gate stays neutral
+ * (no stdout, "ok" is preserved). The day a probe stops reproducing, the todo
+ * fails the whole run and demands its promotion to an enforced check.
  *
  * Reproduced-detection rule (documented so no future session weakens it):
  *   - probeFn MUST return a BOOLEAN.

@@ -17,6 +17,8 @@ export type BakeErrorCode =
   | 'E_OPTION_CONFLICT'
   | 'E_UNKNOWN_FIELD'
   | 'E_BAD_TYPE'
+  | 'E_UNSAFE_INTEGER'    // an all-integer column reaches past +/-(2^53-1) -- override to F64 to accept precision loss
+  | 'E_LANE_MISMATCH'     // a number cannot be represented exactly by the field's integer lane (out of range, fractional, or non-finite)
   | 'R_UNKNOWN_FIELD'
   | 'R_WRONG_TYPE'
   | 'R_INPUT'             // baked/meta is not a non-null object, or buffer/bytes is not an accepted binary type
@@ -67,7 +69,11 @@ export interface BakedMeta {
 }
 
 export interface BakeOptions {
-  /** Override inferred types per field. Missing entries are still inferred. */
+  /**
+   * Override inferred types per field. Missing entries are still inferred. An
+   * int-lane override refuses values the lane cannot represent exactly
+   * (E_LANE_MISMATCH).
+   */
   schema?: Record<string, FieldTypeCode>;
   /**
    * Explicit synonym of the strict default: assert that every record has exactly
@@ -88,7 +94,8 @@ export interface BakeOptions {
 
 /**
  * Compile an array of homogeneous records into a flat ArrayBuffer.
- * Throws if `records` is empty or not an array.
+ * Throws if `records` is empty or not an array. Integer columns beyond
+ * +/-(2^53-1) refuse E_UNSAFE_INTEGER unless overridden to F64.
  */
 export function bake(records: ReadonlyArray<Record<string, unknown>>, opts?: BakeOptions): Baked;
 

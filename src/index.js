@@ -43,6 +43,8 @@
  *   E_OPTION_CONFLICT validate:true and coerce:'zero' cannot both be set
  *   E_UNKNOWN_FIELD   schema override names a field not present in the records
  *   E_BAD_TYPE        schema override value is not a Types code 0..7
+ *   E_UNSAFE_INTEGER  an all-integer column reaches past +/-(2^53-1) where integer identity is ambiguous; override to F64 to accept precision loss
+ *   E_LANE_MISMATCH   a number cannot be represented exactly by the field's integer lane (out of range, fractional, or non-finite)
  *   R_UNKNOWN_FIELD   Reader asked for a field the baked schema does not have
  *   R_WRONG_TYPE      Reader asked for a field under the wrong lane width
  *   R_INPUT            baked/meta is not a non-null object, or buffer/bytes is not an accepted binary type
@@ -166,28 +168,58 @@ function levOpt(a, b) {
 const F32 = 0, F64 = 1, I32 = 2, I16 = 3, I8 = 4, U32 = 5, U16 = 6, U8 = 7;
 const BYTES = [4, 8, 4, 2, 1, 4, 2, 1];
 
+// Fit-door bounds and names, indexed by the type code (F32,F64,I32,I16,I8,
+// U32,U16,U8). The float lanes carry no integer fit constraint (+/-Infinity
+// bounds), so the door -- gated `f.type >= 2` -- only fires on int lanes. Used
+// on the cold write path; TYPE_NAMES is for refusal messages only.
+const LO = [-Infinity, -Infinity, -0x80000000, -0x8000, -0x80, 0, 0, 0];
+const HI = [Infinity, Infinity, 0x7fffffff, 0x7fff, 0x7f, 0xffffffff, 0xffff, 0xff];
+const TYPE_NAMES = ['F32', 'F64', 'I32', 'I16', 'I8', 'U32', 'U16', 'U8'];
+
 // Detect platform endianness once so DataView writes match TypedArray reads.
 const LE = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
+// The inference ladder (decisions/0005). One pass per column, zero allocation.
+// A finite number feeds the min/max/allInt/allFround trackers; a non-finite
+// number (NaN, +/-Infinity) sets sawNonFinite and forces the float rung so an
+// integer lane can never zero it. inferType runs ONLY for un-overridden fields,
+// so E_UNSAFE_INTEGER fires only on the inference path.
 function inferType(records, key) {
-  let allInt = true, min = Infinity, max = -Infinity, sawNumber = false;
+  let allInt = true, allFround = true, min = Infinity, max = -Infinity;
+  let sawNumber = false, sawNonFinite = false;
   for (let i = 0; i < records.length; i++) {
     const v = records[i][key];
-    if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+    if (typeof v !== 'number') continue;
+    if (!Number.isFinite(v)) { sawNonFinite = true; continue; }
     sawNumber = true;
     if (!Number.isInteger(v)) allInt = false;
     if (v < min) min = v;
     if (v > max) max = v;
+    if (allFround && Math.fround(v) !== v) allFround = false;
   }
-  if (!sawNumber || !allInt) return F32;
-  if (min >= 0) {
-    if (max <= 0xff)   return U8;
-    if (max <= 0xffff) return U16;
-    return U32;
+  // No finite number seen -> the F32 fallback (NaN/Infinity ride F32 exactly).
+  if (!sawNumber) return F32;
+  // A non-finite value bars every integer lane: take the float rung.
+  if (!sawNonFinite && allInt) {
+    if (min >= 0) {
+      if (max <= 0xff)         return U8;
+      if (max <= 0xffff)       return U16;
+      if (max <= 0xffffffff)   return U32;
+    } else {
+      if (min >= -0x80        && max <= 0x7f)         return I8;
+      if (min >= -0x8000      && max <= 0x7fff)       return I16;
+      if (min >= -0x80000000  && max <= 0x7fffffff)   return I32;
+    }
+    // Past the 32-bit lanes: an F64 holds any integer up to +/-(2^53-1) exactly.
+    if (Number.isSafeInteger(min) && Number.isSafeInteger(max)) return F64;
+    const bad = Number.isSafeInteger(max) ? min : max;
+    raise('E_UNSAFE_INTEGER',
+      "lite-bake: field '" + key + "' integer " + bad +
+      ' is beyond +/-(2^53-1) where integer identity is ambiguous -- ' +
+      'override the field to Types.F64 to accept documented precision loss');
   }
-  if (min >= -0x80   && max <= 0x7f)   return I8;
-  if (min >= -0x8000 && max <= 0x7fff) return I16;
-  return I32;
+  // Float rung: F32 when every value survives the fround round-trip, else F64.
+  return allFround ? F32 : F64;
 }
 
 /**
@@ -284,12 +316,18 @@ export function bake(records, opts = {}) {
     const rec = records[i];
     const base = i * stride;
 
-    // (3) drift door -- strict only. One pass over rec's own keys against the
+    // (3) drift door -- strict only. One pass over rec's OWN keys against the
     // record-0 keyset, counting matches; a stray key or a shortfall refuses.
-    // Under coerce:'zero' the door is skipped: extras drop, absents read 0.
+    // The keyset contract is own-ENUMERABLE keys: both walks skip inherited
+    // members via hasOwnProperty, so an absent own prototype-named field (e.g.
+    // 'constructor' present in record 0, dropped in record N) now refuses
+    // E_MISSING_FIELD -- it no longer slips through an inherited value into the
+    // E_NON_NUMERIC value door (finding BK-29, fixed in B3). Under coerce:'zero'
+    // the door is skipped: extras drop, absents read 0.
     if (strict) {
       let own = 0;
       for (const k in rec) {
+        if (!Object.prototype.hasOwnProperty.call(rec, k)) continue;
         if (keyset[k] === undefined) {
           raise('E_UNEXPECTED_FIELD', `lite-bake: record ${i} has unknown field '${k}'`);
         }
@@ -297,7 +335,7 @@ export function bake(records, opts = {}) {
       }
       if (own < keys.length) {
         for (let m = 0; m < keys.length; m++) {
-          if (!(keys[m] in rec)) {
+          if (!Object.prototype.hasOwnProperty.call(rec, keys[m])) {
             raise('E_MISSING_FIELD', `lite-bake: record ${i} missing field '${keys[m]}'`);
           }
         }
@@ -310,13 +348,24 @@ export function bake(records, opts = {}) {
       let v = rec[f.name];
       // Per-value door where each silent mask stood: one typeof + branch.
       // Strict refuses a non-number; coerce writes exact 0. Numbers write
-      // through: float lanes DIRECT (NaN/-0/Infinity preserved), int lanes
-      // keep their current mask semantics (range is B3's inference ladder).
+      // through: float lanes DIRECT (NaN/-0/Infinity preserved).
       if (typeof v !== 'number') {
         if (strict) {
           raise('E_NON_NUMERIC', `lite-bake: record ${i} field '${f.name}' is not a number`);
         }
         v = 0;
+      }
+      // (4) fit door -- int lanes (codes 2..7) only. A number that the lane
+      // cannot represent EXACTLY (fractional, out of range, or non-finite)
+      // refuses in ALL modes: numbers are never coerced (decisions/0001). A
+      // coerced 0 is an integer inside every lane, so it passes trivially.
+      // Behind this door the store masks below (|0, >>>0, &0xffff, &0xff) are
+      // provably exact, never a silent wrap.
+      if (f.type >= 2 && (!Number.isInteger(v) || v < LO[f.type] || v > HI[f.type])) {
+        raise('E_LANE_MISMATCH',
+          "lite-bake: record " + i + " field '" + f.name + "' value " + v +
+          ' does not fit lane ' + TYPE_NAMES[f.type] +
+          ' -- choose a wider lane or a float override (Types.F32/F64)');
       }
       switch (f.type) {
         case F32: dv.setFloat32(addr, v,        LE);     break;

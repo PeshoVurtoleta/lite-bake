@@ -29,13 +29,10 @@ const NOOP = function () {};
 /** Retained sink so the control's allocations survive GC (arrayBuffers grows). */
 const leak = [];
 
-// After B1 the write-side todos (BK-03/04/06/07/08/11/13) were promoted; after
-// B2 the Reader-trust todos (BK-05/09/10/12) are promoted too. Only the two
-// deferred inference-ladder defects (B3's targets) remain.
-const EXPECTED_TODOS = [
-  'BK-01-int-ceiling-wrap',
-  'BK-02-f32-precision-loss',
-];
+// After B3 the last two deferred inference-ladder todos (BK-01, BK-02) are
+// promoted to enforced checks in t1, so the registry is now empty: all thirteen
+// findings are closed and the todo mechanism is dormant.
+const EXPECTED_TODOS = [];
 
 export function run() {
   // --- Control 1: the alloc gate. A hot body that retains an allocation every
@@ -100,9 +97,9 @@ export function run() {
   t.untrack(h);
   if (t.size() !== 0) die('t9 control: leak tracker did not release on untrack (size != 0)');
 
-  // --- Control 5: the todo registry. By the time t9 runs, every stub/property
-  // tier has registered its todos: exactly the thirteen BK-01..BK-13 full names.
-  // This mechanically proves "registered todos, IDs in the names". ---------------
+  // --- Control 5: the todo registry. By the time t9 runs, every tier has run;
+  // after B3 no tier registers a todo (all thirteen BK-01..BK-13 are promoted),
+  // so the registry is empty. This mechanically proves "zero registered todos".
   const ids = todoIds();
   if (ids.length !== EXPECTED_TODOS.length) {
     die('t9 control: expected ' + EXPECTED_TODOS.length + ' registered todos, saw ' + ids.length);
@@ -192,11 +189,13 @@ export function run() {
     die('t9 control 9c: extractPinned recognised an alien (double-quoted) spelling');
   }
 
-  // --- Control 10: the hostile-name oracle. A dropped prototype-named field
-  // ('constructor') survives the missing check via inheritance and refuses at
-  // the value door (E_NON_NUMERIC), NOT E_MISSING_FIELD -- the BK-29 divergence.
-  // breakHostile (hasOwnProperty missing check) predicts E_MISSING_FIELD and so
-  // MUST diverge from the actual bake; knob off MUST match. --------------------
+  // --- Control 10: the hostile-name oracle, INVERTED after the BK-29 fix. A
+  // dropped own prototype-named field ('constructor') now refuses at the drift
+  // door (E_MISSING_FIELD) under fixed src's own-key semantics. The knob-off
+  // hostileOracle uses hasOwnProperty too, so it MUST MATCH the actual bake.
+  // breakHostile INVERTS to the old prototype-inclusive `in`, under which the
+  // inherited 'constructor' counts as present, the value door is reached, and
+  // E_NON_NUMERIC is predicted -- so it MUST diverge. -------------------------
   const hRec0 = {}; hRec0['constructor'] = 1; hRec0['x'] = 2;   // constructor is an own numeric field
   const hRec1 = {}; hRec1['x'] = 3;                             // constructor dropped -> inherited Function
   const hCorpus = [hRec0, hRec1];
@@ -289,4 +288,32 @@ export function run() {
   if (checkRoundTrip(c15broken) === null) {
     die('t9 control 15: a byteOffset-ignoring factory passed the round-trip (would not catch a BK-05 regression)');
   }
+
+  // --- Control 16: the breakLane knob (the fit door). An explicit int-lane
+  // override fed a value it cannot hold exactly refuses E_LANE_MISMATCH.
+  // crossOracle with breakLane off predicts that refusal and MUST match the
+  // actual bake; breakLane skips the fit door and predicts the old wrapped store
+  // (no throw), so it MUST diverge. A non-vacuity twin proves the knob-off oracle
+  // still passes an in-range corpus that genuinely bakes clean. -----------------
+  const c16Schema = { g0: Types.U8 };
+  const c16Corpus = [{ g0: 10 }, { g0: 256 }];   // 256 does not fit U8
+  let c16Actual = null;
+  try { bake(c16Corpus, { schema: c16Schema }); } catch (e) { c16Actual = e.code; }
+  const c16Off = crossOracle(c16Schema, c16Corpus, 'default', false, false);
+  if (c16Off.throws !== c16Actual) {
+    die('t9 control 16: crossOracle knob-off predicted ' + c16Off.throws + ' but bake gave ' + c16Actual);
+  }
+  const c16On = crossOracle(c16Schema, c16Corpus, 'default', false, true);
+  if (c16On.throws === c16Actual) {
+    die('t9 control 16: breakLane did not diverge from the fit-door refusal (both ' + c16Actual + ')');
+  }
+  // Non-vacuity twin: an in-range corpus is predicted clean and bakes clean.
+  const c16Good = [{ g0: 10 }, { g0: 20 }];
+  const c16GoodExp = crossOracle(c16Schema, c16Good, 'default', false, false);
+  if (c16GoodExp.throws) {
+    die('t9 control 16: crossOracle predicted a throw on an in-range corpus (vacuous/broken)');
+  }
+  let c16GoodErr = null;
+  try { bake(c16Good, { schema: c16Schema }); } catch (e) { c16GoodErr = e; }
+  if (c16GoodErr) die('t9 control 16: bake refused an in-range corpus (' + c16GoodErr.code + ')');
 }

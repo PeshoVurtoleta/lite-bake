@@ -21,8 +21,13 @@
  * JIT variance for yourself.
  */
 
+// Post-1.2.0 inference widens arbitrary doubles to F64, so the bench pins x/y to
+// F32 explicitly (positions tolerate quantization) to keep the layout and claims
+// comparable with earlier runs.
 import { performance } from 'node:perf_hooks';
-import { bake, Reader } from '../src/index.js';
+import { bake, Reader, Types } from '../src/index.js';
+
+const BENCH_SCHEMA = { x: Types.F32, y: Types.F32 };
 
 const N = 50_000;
 const LOOPS = 100;
@@ -68,7 +73,7 @@ console.log(`\nlite-bake benchmark: ${N.toLocaleString()} records, ${LOOPS} loop
 // --- Build data and bake once ----------------------------------------------
 
 const records = makeRecords();
-const baked = bake(records);
+const baked = bake(records, { schema: BENCH_SCHEMA });
 const approxObjBytes = N * (16 + 4 * 8);
 
 // --- Init cost (single measurement; init is not in the per-frame path) -----
@@ -78,7 +83,7 @@ const parsed = JSON.parse(JSON.stringify(records));
 const parseMs = performance.now() - t0Parse;
 
 const t0Bake = performance.now();
-bake(records);
+bake(records, { schema: BENCH_SCHEMA });
 const bakeMs = performance.now() - t0Bake;
 
 console.log('INIT COST (one-time, at level load)');

@@ -159,14 +159,22 @@ Records are laid out back-to-back at a known byte offset. Reading record `i+1` i
 | All integers, `0..4_294_967_295` | `U32` | 4 |
 | All integers, `-128..127` | `I8` | 1 |
 | All integers, `-32768..32767` | `I16` | 2 |
-| All integers, `-2³¹..2³¹-1` | `I32` | 4 |
-| Any fractional value (`1.5`, `-0.25`, ...) | `F32` | 4 |
+| All integers, `-2^31..2^31-1` | `I32` | 4 |
+| All integers, beyond the 32-bit lanes up to `+/-(2^53-1)` | `F64` | 8 |
+| Any integer beyond `+/-(2^53-1)` | refused: `E_UNSAFE_INTEGER` (override to `F64` to accept documented precision loss) | -- |
+| Fractional values where every value survives the `Math.fround` round-trip (`1.5`, `-0.25`) | `F32` | 4 |
+| Fractional values `F32` cannot represent exactly (`0.1`, `20000001.5`) | `F64` | 8 |
 | Non-number (string, `null`, boolean, mixed) | refused: `E_NON_NUMERIC` by default; `coerce: 'zero'` stores `0` in an `F32` lane | 4 |
 
+The ladder never wraps and never truncates: it picks the smallest lane that
+holds the column exactly, widening integers to `F64` up to `+/-(2^53-1)` and
+doubles to `F64` when `Math.fround` would lose them. A column carrying
+`NaN`/`Infinity` always takes a float lane.
+
 **When to override:**
-- Pixel-accurate coordinates you don't want snapped to int → force `F32`.
-- Scientific precision values (doubles) → force `F64`.
-- You want the binary layout to be stable regardless of record values → override everything.
+- Pixel-accurate coordinates you want kept in 4 bytes even when a double appears -> force `F32` to SHRINK (accepting `Math.fround` quantization).
+- An inferred integer column beyond `+/-(2^53-1)` you accept lossy -> force `F64` (the `E_UNSAFE_INTEGER` escape hatch). Doubles that genuinely need `F64` are now inferred for you.
+- You want the binary layout stable regardless of record values -> override everything.
 
 ```javascript
 bake(records, {
@@ -247,6 +255,8 @@ Every door throws a `LiteBakeError` (an `Error` subclass) with a `.code`. Catch 
 | `E_OPTION_CONFLICT` | `validate: true` and `coerce: 'zero'` both set |
 | `E_UNKNOWN_FIELD` | `schema` override names a field not in the records |
 | `E_BAD_TYPE` | `schema` override value is not a Types code `0..7` |
+| `E_UNSAFE_INTEGER` | an all-integer column reaches past `+/-(2^53-1)`; override to `F64` to accept precision loss |
+| `E_LANE_MISMATCH` | a number cannot ride the field's integer lane exactly (out of range, fractional, or non-finite) |
 | `R_UNKNOWN_FIELD` | Reader asked for a field the schema does not have |
 | `R_WRONG_TYPE` | Reader asked for a field under the wrong lane width |
 | `R_INPUT` | `baked`/`meta` is not a non-null object, or `buffer`/`bytes` is not an accepted binary type |
@@ -306,7 +316,7 @@ So that `new Float64Array(baked.buffer)` always works, even when no field is an 
 
 ### Inference reads every record
 
-`bake()` walks all records once to determine the smallest fitting type. O(records × fields). For 100k records, this is single-digit milliseconds. If you already know the types and want to skip inference entirely, pass a full `opts.schema`.
+`bake()` walks all records once to determine the smallest fitting type: for each column it tracks min/max, whether every value is an integer, whether every value survives the `Math.fround` round-trip, and whether the integer extremes stay inside `+/-(2^53-1)`. O(records x fields). For 100k records, this is single-digit milliseconds. If you already know the types and want to skip inference entirely, pass a full `opts.schema`.
 
 ### Null / undefined / missing / extra fields are refused by default (since 1.1.0)
 
@@ -368,14 +378,14 @@ Measured on Node 22, 50,000 records (random x/y/type/hp), 100 loop passes per tr
 npm test
 ```
 
-Uses Node's built-in `node:test` runner. Zero dependencies. 95 tests covering input validation, type inference, round-trip correctness, layout/alignment, schema overrides, the strict-default write-side doors (`test/Doors.test.js`), the Reader coherence + bounds + `fromBytes` doors (`test/ReaderDoors.test.js`), Reader helpers, and integration. Should complete in under a second.
+Uses Node's built-in `node:test` runner. Zero dependencies. 121 tests covering input validation, type inference, the inference ladder + fit-door refusals (`test/InferenceLadder.test.js`), round-trip correctness, layout/alignment, schema overrides, the strict-default write-side doors (`test/Doors.test.js`), the Reader coherence + bounds + `fromBytes` doors (`test/ReaderDoors.test.js`), Reader helpers, and integration. Should complete in under a second.
 
 ### What the tests cover
 
 | Category | What it verifies | Why it matters |
 |---|---|---|
 | Input validation | `bake([])`, `bake(null)`, `bake({})` all throw | Never silently corrupt |
-| Type inference | Boundary at 255, 256, 65535, 65536, -128, -129 | Correct smallest-fitting type |
+| Type inference | Boundaries at 255/256, 65535/65536, -128/-129, 4294967295/4294967296, `+/-2^53`, and the `Math.fround` rung | Correct smallest-fitting lane, no wrap |
 | Round-trip | Values go in → come out bit-identical (ints) or float-precise | Core correctness claim |
 | F64 alignment | F64 + U32 mix, stride padding, typed-array reads match DataView | The *critical* fix — untested, this regresses silently |
 | Layout | Buffer size padded to 8, offsets aligned, sorted by size | Memory model matches the README |
@@ -454,9 +464,9 @@ test('my game: enemy table round-trips', () => {
 | Symptom | Likely cause | Check |
 |---|---|---|
 | `R_BAD_LENGTH` thrown from `new Reader` | The buffer byteLength is not a multiple of 8 -- usually a truncated or partially-written file | Re-save the full buffer (`new Uint8Array(baked.buffer)`); reconstruct with `Reader.fromBytes`. (Old lite-bake threw a raw `RangeError` from `Float64Array` here; since 1.1.1 the Reader fails closed with a coded refusal.) |
-| Values read back as `0` | Field was non-numeric, or forgot schema override for F32 on whole ints | `console.log(b.schema)` |
-| Values read back as wrong integer | Inference picked U8, real range exceeded 255 | Add schema override |
-| Coords drift slightly each frame | F32 precision on large values | Override to F64 |
+| `E_LANE_MISMATCH` thrown from `bake` | A value does not fit the integer lane you overrode to (out of range, fractional, or non-finite) -- values cannot silently wrap anymore | Widen the lane, or override to `F32`/`F64` |
+| `E_UNSAFE_INTEGER` thrown from `bake` | An inferred integer column reaches past `+/-(2^53-1)` | Override the column to `F64` to accept documented precision loss |
+| Coords quantized after bake | You overrode a double column to `F32` (inference now widens drift-prone doubles to `F64` for you) | Leave it `F64` for precision, or keep `F32` to shrink |
 | `field 'x' has wrong type` thrown from `offsetF32` | You asked for F32 offset on a non-F32 field | Match field type to offset helper, or pass schema override |
 
 ---

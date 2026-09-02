@@ -44,6 +44,17 @@ import { makePrng, SEED, check, die, BREAK } from './harness.mjs';
 // public surface from src.
 const BYTES = [4, 8, 4, 2, 1, 4, 2, 1];
 
+// Fit-door bounds indexed by type code, mirroring src. int lanes are codes 2..7;
+// a number that is fractional, out of range, or non-finite cannot ride an int
+// lane exactly, so src refuses it E_LANE_MISMATCH in ALL modes (numbers are
+// never coerced). fitBad() is the oracle predicate for that door.
+const LO = [-Infinity, -Infinity, -0x80000000, -0x8000, -0x80, 0, 0, 0];
+const HI = [Infinity, Infinity, 0x7fffffff, 0x7fff, 0x7f, 0xffffffff, 0xffff, 0xff];
+
+function fitBad(type, v) {
+  return type >= 2 && (!Number.isInteger(v) || v < LO[type] || v > HI[type]);
+}
+
 // Fixed lanes, distinct byte sizes so the write-loop's size-descending sort
 // equals insertion == enumeration order. Covers F64, F32, a signed int, an
 // unsigned int.
@@ -129,32 +140,35 @@ function genCorpus(prng) {
 }
 
 // The fixed-lane oracle. strict = default/validate; breakOn disables ONLY the
-// value-door non-number check (the deliberate BREAK misapplication).
+// value-door non-number check (the deliberate BREAK misapplication). RECORD-
+// MAJOR, mirroring src exactly: per record, the drift doors (unexpected then
+// missing) run, then the value loop in the size-descending field order does the
+// non-number door THEN the fit door. The fit door (E_LANE_MISMATCH) fires in
+// ALL modes -- a number is never coerced -- so a NaN/Infinity/out-of-range value
+// reaching the I16/U8 lanes refuses even under coerce. FIELDS is already in
+// descending byte size (8,4,2,1) with distinct sizes, so array order equals src's
+// stable sort order.
 function oracle(records, strict, breakOn) {
-  if (strict) {
-    for (let i = 0; i < records.length; i++) {
-      const rec = records[i];
+  const values = new Array(records.length);
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i];
+    if (strict) {
       for (const k in rec) {
         if (!(k in KEYSET)) return { throws: 'E_UNEXPECTED_FIELD' };
       }
       for (let j = 0; j < FIELD_NAMES.length; j++) {
         if (!(FIELD_NAMES[j] in rec)) return { throws: 'E_MISSING_FIELD' };
       }
-      if (!breakOn) {
-        for (let j = 0; j < FIELDS.length; j++) {
-          if (typeof rec[FIELDS[j].name] !== 'number') return { throws: 'E_NON_NUMERIC' };
-        }
-      }
     }
-  }
-  const values = new Array(records.length);
-  for (let i = 0; i < records.length; i++) {
-    const rec = records[i];
     const row = {};
     for (let j = 0; j < FIELDS.length; j++) {
       const f = FIELDS[j];
       let v = rec[f.name];
-      if (typeof v !== 'number') v = 0;
+      if (typeof v !== 'number') {
+        if (strict && !breakOn) return { throws: 'E_NON_NUMERIC' };
+        v = 0;   // coerce (or the breakOn misapply) stores exact 0
+      }
+      if (fitBad(f.type, v)) return { throws: 'E_LANE_MISMATCH' };
       row[f.name] = laneStore(f.type, v);
     }
     values[i] = row;
@@ -217,40 +231,61 @@ const ITERS = 300;
  *      oracle assumes them valid and models no E_UNKNOWN_FIELD/E_BAD_TYPE.
  *   P4 per record in index order: if strict, extras in for..in order
  *      (E_UNEXPECTED_FIELD); on own-count shortfall, missing in keys[] order via
- *      the `in` operator (E_MISSING_FIELD); then values in the size-sorted field
- *      order (stable sort by BYTES desc, replicating src:252): a non-number is
- *      E_NON_NUMERIC (strict) or 0 (coerce), else laneStore(type, v).
+ *      hasOwnProperty (own-key semantics -- BK-29 fixed in B3: an absent own
+ *      prototype-named field refuses E_MISSING_FIELD, it no longer slips an
+ *      inherited value into the value door); then values in the size-sorted
+ *      field order (stable sort by BYTES desc, replicating src): a non-number is
+ *      E_NON_NUMERIC (strict) or 0 (coerce); then the fit door -- a number an
+ *      int lane cannot hold exactly is E_LANE_MISMATCH in ALL modes -- else
+ *      laneStore(type, v).
  *
  * cfg knobs (all default off):
  *   typeOf(name)  -> the resolved Types code for a field.
- *   breakMissing  -> use hasOwnProperty for the missing check instead of `in`.
+ *   breakMissing  -> INVERT the missing check to the OLD prototype-inclusive `in`
+ *                    operator (predicts E_NON_NUMERIC where fixed src, using own
+ *                    keys, gives E_MISSING_FIELD).
  *   breakShape    -> evaluate P1 lazily per record index instead of as a pre-pass.
  *   breakFround   -> treat the F32 lane as exact F64 (skip fround) in laneStore.
+ *   breakLane     -> skip the fit door and fall back to the old mask-store
+ *                    semantics (predicts a wrapped value where src refuses).
  * -------------------------------------------------------------------------- */
 
 function notRecord(rec) {
   return typeof rec !== 'object' || rec === null || Array.isArray(rec);
 }
 
+// Mirror of src inferType -- the IDENTICAL ladder (decisions/0005). The mirror
+// cannot raise a LiteBakeError, so on the unsafe-integer rung it throws an
+// ordinary Error: the inference-driven lanes (hostile, shape) are in-envelope by
+// construction and never reach it, so any reach here is a loud harness fault.
 function inferType(records, key) {
-  let allInt = true, min = Infinity, max = -Infinity, sawNumber = false;
+  let allInt = true, allFround = true, min = Infinity, max = -Infinity;
+  let sawNumber = false, sawNonFinite = false;
   for (let i = 0; i < records.length; i++) {
     const v = records[i][key];
-    if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+    if (typeof v !== 'number') continue;
+    if (!Number.isFinite(v)) { sawNonFinite = true; continue; }
     sawNumber = true;
     if (!Number.isInteger(v)) allInt = false;
     if (v < min) min = v;
     if (v > max) max = v;
+    if (allFround && Math.fround(v) !== v) allFround = false;
   }
-  if (!sawNumber || !allInt) return Types.F32;
-  if (min >= 0) {
-    if (max <= 0xff)   return Types.U8;
-    if (max <= 0xffff) return Types.U16;
-    return Types.U32;
+  if (!sawNumber) return Types.F32;
+  if (!sawNonFinite && allInt) {
+    if (min >= 0) {
+      if (max <= 0xff)         return Types.U8;
+      if (max <= 0xffff)       return Types.U16;
+      if (max <= 0xffffffff)   return Types.U32;
+    } else {
+      if (min >= -0x80        && max <= 0x7f)         return Types.I8;
+      if (min >= -0x8000      && max <= 0x7fff)       return Types.I16;
+      if (min >= -0x80000000  && max <= 0x7fffffff)   return Types.I32;
+    }
+    if (Number.isSafeInteger(min) && Number.isSafeInteger(max)) return Types.F64;
+    throw new Error('t5 mirror: unsafe integer reached an inference-driven lane');
   }
-  if (min >= -0x80   && max <= 0x7f)   return Types.I8;
-  if (min >= -0x8000 && max <= 0x7fff) return Types.I16;
-  return Types.I32;
+  return allFround ? Types.F32 : Types.F64;
 }
 
 function coreOracle(records, mode, cfg) {
@@ -284,20 +319,24 @@ function coreOracle(records, mode, cfg) {
 
     if (strict) {
       for (const k in rec) {
+        if (!Object.prototype.hasOwnProperty.call(rec, k)) continue;
         if (keyset[k] === undefined) return { throws: 'E_UNEXPECTED_FIELD' };
       }
       let own = 0;
-      for (const k in rec) own++;
+      for (const k in rec) {
+        if (!Object.prototype.hasOwnProperty.call(rec, k)) continue;
+        own++;
+      }
       if (own < keys.length) {
         for (let m = 0; m < keys.length; m++) {
-          // pins CURRENT behavior; the E_NON_NUMERIC-for-absent-prototype-named-
-          // field divergence from decisions/0001 is finding BK-29 (candidate) --
-          // its fix updates this branch, not before. breakMissing swaps the
-          // prototype-inclusive `in` for hasOwnProperty, which predicts
-          // E_MISSING_FIELD where src actually gives E_NON_NUMERIC.
+          // Fixed src (B3) uses OWN-key semantics -- hasOwnProperty -- so an
+          // absent own prototype-named field refuses E_MISSING_FIELD (BK-29
+          // fixed). breakMissing INVERTS this to the OLD prototype-inclusive
+          // `in`, under which an inherited member counts as present, the value
+          // door is reached, and E_NON_NUMERIC is predicted instead.
           const present = cfg.breakMissing
-            ? Object.prototype.hasOwnProperty.call(rec, keys[m])
-            : (keys[m] in rec);
+            ? (keys[m] in rec)
+            : Object.prototype.hasOwnProperty.call(rec, keys[m]);
           if (!present) return { throws: 'E_MISSING_FIELD' };
         }
       }
@@ -311,6 +350,10 @@ function coreOracle(records, mode, cfg) {
         if (strict) return { throws: 'E_NON_NUMERIC' };
         v = 0;
       }
+      // Fit door -- mirrors src: after the non-number door, before the store, a
+      // number an int lane cannot hold exactly refuses in ALL modes. breakLane
+      // skips it and falls back to the old mask-store semantics.
+      if (!cfg.breakLane && fitBad(f.type, v)) return { throws: 'E_LANE_MISMATCH' };
       row[f.name] = laneStore(f.type, v, cfg.breakFround);
     }
     rows[i] = row;
@@ -318,13 +361,14 @@ function coreOracle(records, mode, cfg) {
   return { values: rows };
 }
 
-/** Hostile-name lane oracle. Types resolve by inference (override == inferred). */
+/** Hostile-name lane oracle. Types resolve by inference (the absent arm). */
 export function hostileOracle(records, mode, breakHostile) {
   return coreOracle(records, mode, {
     typeOf: (name) => inferType(records, name),
     breakMissing: !!breakHostile,
     breakShape: false,
     breakFround: false,
+    breakLane: false,
   });
 }
 
@@ -335,16 +379,18 @@ export function shapeOracle(records, mode, breakShape) {
     breakMissing: false,
     breakShape: !!breakShape,
     breakFround: false,
+    breakLane: false,
   });
 }
 
 /** Schema-cross oracle. Types resolve straight from the explicit override map. */
-export function crossOracle(schemaFields, records, mode, breakCross) {
+export function crossOracle(schemaFields, records, mode, breakCross, breakLane) {
   return coreOracle(records, mode, {
     typeOf: (name) => schemaFields[name],
     breakMissing: false,
     breakShape: false,
     breakFround: !!breakCross,
+    breakLane: !!breakLane,
   });
 }
 
@@ -357,9 +403,11 @@ function laneFail(lane, mode, iter, detail) {
     '  replay: TORTURE_SEED=' + SEED + ' node --expose-gc test/torture.mjs';
 }
 
-// The seven recipe types (F64 excluded -- it is override-only, and no recipe
-// pins inference to it). Each recipe below pins inferType to its type.
-const RECIPE_TYPES = [Types.U8, Types.U16, Types.U32, Types.I8, Types.I16, Types.I32, Types.F32];
+// The eight recipe types. Each recipe pins inferType to its own type. F64 is now
+// included: the ladder infers it for a big-safe-integer column (past U32, still
+// inside +/-(2^53-1)) and for a fround-hostile double column -- recipeValue picks
+// between those two deterministic classes from the stream.
+const RECIPE_TYPES = [Types.U8, Types.U16, Types.U32, Types.I8, Types.I16, Types.I32, Types.F32, Types.F64];
 
 function recipeValue(prng, type) {
   switch (type) {
@@ -370,6 +418,9 @@ function recipeValue(prng, type) {
     case Types.I16: return -129 - (prng() % 1000);
     case Types.I32: return -32769 - (prng() % 100000);
     case Types.F32: return (prng() % 200) - 100 + 0.5;
+    case Types.F64: return (prng() % 2)
+      ? (2 ** 32 + (prng() % 1000000))     // big safe integer -> F64 (past U32)
+      : ((prng() % 1000) + 0.1);           // fround-hostile double -> F64
   }
   return 0;
 }
@@ -483,9 +534,18 @@ export function runHostileNameLane() {
 
     for (let m = 0; m < MODES.length; m++) {
       const mode = MODES[m];
-      const exp = hostileOracle(recs, mode, false);
-      compareHostile(iter, mode, 'absent', recs, names, optsAbsent(mode), exp);
-      compareHostile(iter, mode, 'present', recs, names, optsPresent(mode, override), exp);
+      // Absent arm resolves types by inference; present arm resolves them from
+      // the explicit override. On a clean corpus the two agree, but a non-finite
+      // value forces inference to a float rung while the override keeps the int
+      // recipe lane (which the fit door then refuses) -- so each arm carries its
+      // own oracle rather than sharing one.
+      const expAbsent = hostileOracle(recs, mode, false);
+      compareHostile(iter, mode, 'absent', recs, names, optsAbsent(mode), expAbsent);
+      const expPresent = coreOracle(recs, mode, {
+        typeOf: (name) => override[name],
+        breakMissing: false, breakShape: false, breakFround: false, breakLane: false,
+      });
+      compareHostile(iter, mode, 'present', recs, names, optsPresent(mode, override), expPresent);
     }
   }
 }
@@ -556,11 +616,14 @@ export function runShapeLane() {
 const ALL_TYPES = [Types.F32, Types.F64, Types.I32, Types.I16, Types.I8, Types.U32, Types.U16, Types.U8];
 
 function wideNumber(prng) {
-  const r = prng() % 5;
+  const r = prng() % 8;
   if (r === 0) return (prng() % 200000) - 100000;           // wide int, out of small ranges
   if (r === 1) return ((prng() % 200000) - 100000) * 0.5;   // fractional
   if (r === 2) return prng() >>> 0;                         // up to ~4e9
   if (r === 3) return -((prng() >>> 0) % 2000000000);       // large negative
+  if (r === 4) return 2 ** 33 + (prng() % 1000000);         // big int beyond 2**32
+  if (r === 5) return (prng() % 2) ? 2 ** 60 : -(2 ** 60);  // big int beyond 2**53
+  if (r === 6) return (prng() % 1000) + 0.1;                // fround-hostile double
   return ((prng() % 2000) - 1000) + 0.25;                   // small fractional
 }
 
