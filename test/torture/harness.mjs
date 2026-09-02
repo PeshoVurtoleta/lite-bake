@@ -43,7 +43,7 @@ export const BREAK = process.env.BAKE_TORTURE_BREAK === '1';
 export const RULES = { maxMajor: 0, maxPauseMs: 4, maxArrayBuffersGrowth: 0 };
 
 /**
- * Field byte sizes indexed by the Types enum in src/index.js:
+ * Field byte sizes indexed by the Types enum in Bake.js:
  *   F32=0, F64=1, I32=2, I16=3, I8=4, U32=5, U16=6, U8=7
  * Duplicated locally on purpose so the harness imports nothing from src on this
  * path. B4's t8 cross tier will drift-guard this table against the source.

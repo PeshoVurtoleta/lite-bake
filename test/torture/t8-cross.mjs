@@ -204,7 +204,7 @@ export function checkBytesTables(harnessText, srcText) {
     return mm[1].split(',').map((n) => Number(n.trim()));
   };
   const a = parse(harnessText, 'harness.mjs');
-  const b = parse(srcText, 'src/index.js');
+  const b = parse(srcText, 'Bake.js');
   if (a === null || b === null) return out;
   if (a.length !== b.length) {
     out.push('BYTES length differs: harness ' + a.length + ' vs src ' + b.length);
@@ -307,7 +307,7 @@ function descByName(descs, name) {
 
 export async function run() {
   const { serialize, deserialize } = await import('@zakkster/lite-bake-stream');
-  const { Reader, Types } = await import('../../src/index.js');
+  const { Reader, Types } = await import('../../Bake.js');
 
   // 1. serialize the corpus; parse the LBK1 container.
   const container = serialize(NDJSON, SIB_SCHEMA);
@@ -393,7 +393,7 @@ export async function run() {
   // 7. EXPORT DRIFT GUARD (check e).
   const here = dirname(fileURLToPath(import.meta.url));   // test/torture
   const root = join(here, '..', '..');                    // package root
-  const srcText = readFileSync(join(root, 'src', 'index.js'), 'utf8');
+  const srcText = readFileSync(join(root, 'Bake.js'), 'utf8');
   const dtsText = readFileSync(join(root, 'types', 'index.d.ts'), 'utf8');
   const llmsText = readFileSync(join(root, 'llms.txt'), 'utf8');
   const eViol = checkExports(srcText, dtsText, llmsText);

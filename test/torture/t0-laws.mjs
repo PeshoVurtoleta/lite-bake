@@ -24,7 +24,7 @@
  *                            the layout or the stored values of a clean corpus.
  */
 
-import { bake, Reader, Types } from '../../src/index.js';
+import { bake, Reader, Types } from '../../Bake.js';
 import { makePrng, SEED, check } from './harness.mjs';
 
 const N = 400;

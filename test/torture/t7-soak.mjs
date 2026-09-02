@@ -18,7 +18,7 @@
  * views), not the records. Heap is sampled ACROSS cycles, after a settling gc.
  */
 
-import { bake, Reader, Types } from '../../src/index.js';
+import { bake, Reader, Types } from '../../Bake.js';
 import { createLeakTracker } from '@zakkster/lite-leak';
 import { makePrng, SEED, check } from './harness.mjs';
 

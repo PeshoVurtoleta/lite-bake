@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { bake, Reader, Types, LiteBakeError } from '../src/index.js';
+import { bake, Reader, Types, LiteBakeError } from '../Bake.js';
 
 const isCode = (code) => (e) => e.code === code;
 

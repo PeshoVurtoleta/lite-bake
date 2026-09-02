@@ -3,19 +3,19 @@
   "version": "1.3.0",
   "description": "Compile JSON arrays into flat interleaved binary for zero-GC, L1-cache-friendly reads. Stop parsing JSON in your game loop.",
   "type": "module",
-  "main": "./src/index.js",
-  "module": "./src/index.js",
+  "main": "./Bake.js",
+  "module": "./Bake.js",
   "types": "./types/index.d.ts",
   "exports": {
     ".": {
       "types": "./types/index.d.ts",
-      "import": "./src/index.js",
-      "node": "./src/index.js",
-      "default": "./src/index.js"
+      "import": "./Bake.js",
+      "node": "./Bake.js",
+      "default": "./Bake.js"
     }
   },
   "files": [
-    "src",
+    "Bake.js",
     "types",
     "README.md",
     "CHANGELOG.md",
@@ -29,8 +29,7 @@
     "torture:control": "BAKE_TORTURE_BREAK=1 node --expose-gc test/torture.mjs || echo control-failed-as-expected",
     "verify": "npm test && npm run torture",
     "bench": "node ./benchmark/bench.js",
-    "example": "node examples/basic.js",
-    "bundle-check": "npx esbuild src/index.js --bundle --format=esm --outfile=test-bundle.js"
+    "example": "node examples/basic.js"
   },
   "keywords": [
     "json",

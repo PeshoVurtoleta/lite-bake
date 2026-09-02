@@ -8,7 +8,7 @@ Design principles: one allocation at load time, native endianness, stride padded
 
 ## Source
 
-- [src/index.js](src/index.js): The complete library. ~660 lines. Two public exports: `bake()` and `Reader` (with the static `Reader.fromBytes`). Plus a `Types` enum for schema overrides.
+- [Bake.js](Bake.js): The complete library. ~660 lines. Two public exports: `bake()` and `Reader` (with the static `Reader.fromBytes`). Plus a `Types` enum for schema overrides.
 - [types/index.d.ts](types/index.d.ts): TypeScript declarations.
 
 ## Docs

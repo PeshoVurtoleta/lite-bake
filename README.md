@@ -401,7 +401,7 @@ Drop a `.test.js` file in `test/`. Any file the `node --test` runner discovers w
 ```javascript
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bake, Reader } from '../src/index.js';
+import { bake, Reader } from '../Bake.js';
 
 test('my game: enemy table round-trips', () => {
   const enemies = [ /* ... */ ];

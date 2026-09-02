@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { bake, Reader, Types } from '../../src/index.js';
+import { bake, Reader, Types } from '../../Bake.js';
 import { SEED, check } from './harness.mjs';
 
 // F64 b@0, U8 a@8, stride 16, count 2, 32-byte buffer. Spread + corrupt one

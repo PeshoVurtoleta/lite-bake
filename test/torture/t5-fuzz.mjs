@@ -36,7 +36,7 @@
  * property, so this module still LOADS against a pre-B1 src.
  */
 
-import { bake, Reader, Types } from '../../src/index.js';
+import { bake, Reader, Types } from '../../Bake.js';
 import { makePrng, SEED, check, die, BREAK } from './harness.mjs';
 
 // Field byte sizes indexed by the Types enum (F32=0,F64=1,I32=2,I16=3,I8=4,

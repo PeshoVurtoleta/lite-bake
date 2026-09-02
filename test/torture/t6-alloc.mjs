@@ -29,7 +29,7 @@
  * in-process, and it guards any future tier reordering.
  */
 
-import { bake, Reader, Types } from '../../src/index.js';
+import { bake, Reader, Types } from '../../Bake.js';
 import { runOpsGate, BREAK, check, die } from './harness.mjs';
 
 const COUNT = 131072;          // 2^17 rows

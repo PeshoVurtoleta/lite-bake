@@ -10,7 +10,7 @@
  * enforced check pinning the exact code plus a non-vacuous clean twin.
  */
 
-import { bake, Reader, Types } from '../../src/index.js';
+import { bake, Reader, Types } from '../../Bake.js';
 import { check } from './harness.mjs';
 
 function caught(fn) {

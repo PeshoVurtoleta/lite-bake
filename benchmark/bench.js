@@ -25,7 +25,7 @@
 // F32 explicitly (positions tolerate quantization) to keep the layout and claims
 // comparable with earlier runs.
 import { performance } from 'node:perf_hooks';
-import { bake, Reader, Types } from '../src/index.js';
+import { bake, Reader, Types } from '../Bake.js';
 
 const BENCH_SCHEMA = { x: Types.F32, y: Types.F32 };
 

@@ -17,7 +17,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { bake, Reader, Types } from '../../src/index.js';
+import { bake, Reader, Types } from '../../Bake.js';
 import { createLeakTracker } from '@zakkster/lite-leak';
 import { runOpsGate, checkLayout, die, todoIds } from './harness.mjs';
 import { extractThrown, extractDeclared, extractPinned, diffInventory } from './inventory.mjs';
@@ -156,7 +156,7 @@ export function run() {
   // Three fail-arms then prove the diff bites each direction. ------------------
   const here = dirname(fileURLToPath(import.meta.url));   // test/torture
   const root = join(here, '..', '..');                    // package root
-  const srcText = readFileSync(join(root, 'src', 'index.js'), 'utf8');
+  const srcText = readFileSync(join(root, 'Bake.js'), 'utf8');
   const dtsText = readFileSync(join(root, 'types', 'index.d.ts'), 'utf8');
   const scanPaths = [];
   const testDir = join(root, 'test');

@@ -17,7 +17,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { bake, Reader, Types } from '../../src/index.js';
+import { bake, Reader, Types } from '../../Bake.js';
 import { makePrng, SEED, check, checkLayout } from './harness.mjs';
 
 const ITERS = 256;

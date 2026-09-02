@@ -10,7 +10,7 @@
  *   4. Iterate over raw typed arrays in the hot loop.
  */
 
-import {bake, Reader, Types} from '../src/index.js';
+import {bake, Reader, Types} from '../Bake.js';
 
 // --- Input: what your level designer exports from the editor ---------------
 
