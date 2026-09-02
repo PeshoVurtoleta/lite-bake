@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file. This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] -- 2026-09-02
+
+B5 -- docs on the blueprint spine, zero logic in the diff. The README is rebuilt in the LiteSepforge section order (positioning H2, table of contents, why-this-exists, what-you-get, a Memory-layout deep-dive, API reference, composability, a zero-GC design-notes block, benchmarks, design decisions, testing, what-this-is-not, ecosystem, license) with a working table of contents; the main file is now `Bake.js` at the package root per the suite law (single PascalCase main file), and consumers see no change because the `.` export is the contract, not the path. The ASCII law now holds tree-wide (every source, doc, test, and decision reads pure ASCII, U+00D7 and U+00B5 excepted) and a standing torture guard enforces it permanently -- t8 check h reads the whole tracked tree fresh from disk and t9 Control 24 proves that guard can fail. The FAQ-era design calls are written down as decision records 0007 (AoS over SoA), 0008 (native endianness), and 0009 (eager Reader views). Every falsifiable claim was reconciled to measured truth. Gates and walls: the unit suite is unchanged at 121 tests, all green; the ten-tier torture gate prints exactly `ok` (x3 stable), `TORTURE_SEED=12345` and `99999` replay `ok`, and `BAKE_TORTURE_BREAK=1` still exits non-zero; `npm pack --dry-run` is 7 files; the error-code inventory stays 22 == 22 == 22 across thrown/declared/pinned (no new codes). `Bake.js` is byte-identical to 1.3.0's `src/index.js` apart from five comment/string ASCII character-swap lines -- no logic changed.
+
+### Added
+
+- Torture t8 check h -- the ASCII-law drift guard: a pure exported `checkAsciiLaw(entries)` plus a `run()` pass that reads the whole tracked tree fresh from disk (Bake.js, types, llms.txt, README, CHANGELOG, package.json, LICENSE, examples, benchmark, every `test/*.test.js`, `test/torture.mjs`, every `test/torture/*.mjs`, every `decisions/*.md`) and fails closed on any non-ASCII outside U+00D7/U+00B5, any unreadable file, or any empty expected directory.
+- t9 Control 24: teeth (a raw em-dash named as `U+2014`) plus non-vacuity twins (clean text and the two blessed signs, built at runtime via `String.fromCharCode`) and a fail-closed check on a non-string entry, proving check h can fail.
+- `decisions/0007-aos-over-soa.md`, `decisions/0008-native-endianness.md`, `decisions/0009-eager-views.md` -- the interleaved-layout, native-byte-order, and eager-view calls transcribed as decision records (retrofit, BK-24).
+- README table of contents and a `Types` constants table (code 0..7 -> lane -> bytes).
+
+### Changed
+
+- `src/index.js` -> `Bake.js` at the package root, with `main`/`module`/`exports`, `files[]`, and every import and fs path across tests, torture tiers, benchmark, example, README, and llms.txt updated (the `.` export is unchanged, so consumers see no difference).
+- README rebuilt on the LiteSepforge spine (section map above); llms.txt regenerated (tagline source-size truth, README-description line naming the new sections, the source link at `Bake.js`).
+- `examples/basic.js` comment corrected to the truth (BK-23): inference would pick U16 for the small ints and store them exactly; the F32 override exists so fractional pixel coordinates keep working and the layout stays stable as values change.
+- The "2x faster in micro-benchmarks" FAQ claim reconciled to the measured ~0.9x-1.1x parity plus the cache/GC-consistency story.
+
+### Removed
+
+- The `bundle-check` script (BK-25): it npx-fetched its tool at run time, wrote `test-bundle.js` to an unignored repo root, and referenced the moved `src/index.js` path.
+- The unverifiable "~3 KB minified" size claim in llms.txt (BK-17): replaced with verifiable truth (0 deps, ~30 kB source).
+- The README `## Roadmap` heading (BK-24): its content lives on as decided/parked bullets under "What this is not" (SoA parked -> 0007, string tables delegated to LBK1 U32 lanes, `serialize()`/`deserialize()` resolved by 0006, matrix attributes parked).
+
+Keyed BK-17 (ASCII sweep), BK-19 (the Bake.js rename), BK-23 (the example comment), BK-24 (the retrofit decisions + roadmap retirement), BK-25 (the bundle-check removal); BK-12 re-verified (the t2 stride pin still passes).
+
 ## [1.3.0] -- 2026-09-02
 
 B4 -- the wire-format decision, made with the sibling on the table (decisions/0006): the suite's one wire format is LBK1, owned by `@zakkster/lite-bake-stream`; lite-bake mints no second one -- `src/` and `types/` are byte-identical to 1.2.0 and no new error codes exist (inventory still 22 == 22 == 22 across thrown/declared/pinned). Torture t8 goes live against the exact-pinned published sibling (1.6.0): F64 lane-width parity cell-for-cell through the `Reader.fromBytes` seam (both against the sibling's own reader and against the corpus source of truth), the U32 index-vs-interned-string semantic divergence, the lane-code table divergence (wire `lane_kind` F64=1 the only shared code point; wire U32=3 vs `Types.U32`=5), an executable wrong-file honesty pin (a shape-plausible misread constructs and visibly misreads -- the documented raw-lane hazard, demonstrated), and standing drift guards (src exports vs llms.txt vs d.ts; the harness `BYTES` table vs src; the docs stanzas themselves). t9 gains Controls 17-23 (teeth + a non-vacuity twin per new gate). The unit suite is unchanged at 121 tests, all green; the ten-tier torture gate prints exactly `ok` in ~1.83-1.88 s wall (x3 stable), `TORTURE_SEED=12345` replays `ok`, and `BAKE_TORTURE_BREAK=1` still exits non-zero (t5's canary trips first; t8 ignores BREAK and does not interfere). Bench (50k records, one machine): init `bake()` 3.95 ms, 4.0x memory ratio, hot-loop throughput unchanged (no src change). The `bench/findings-probes-2026-09-01.mjs` file retires: all 13 BK probes NOT-REPRODUCED and the two XP cross-package probes live on as t8 pins.
