@@ -13,17 +13,22 @@
  *     t2  layout laws over schema space t3  adversarial baked objects (live -- B2)
  *     t4  API abuse (live -- B1/B2)     t5  differential fuzz (live -- B1)
  *     t6  the zero-alloc gate           t7  soak + retention witness
- *     t8  cross-package parity (stub -> B4)  t9  controls + inventory gate
+ *     t8  cross-package parity (live -- B4)  t9  controls + inventory gate
  *
- * Live now: t0, t1, t2, t3, t4, t5, t6, t7, t9. t5 is the fixed differential
+ * Live now: t0, t1, t2, t3, t4, t5, t6, t7, t8, t9. t5 is the fixed differential
  * lane plus B6's hostile-name / shape / schema-cross lanes. t3 (B2) is the
  * trust-nothing tier: the corrupt-baked matrix, the row-bounds policy, and the
  * fromBytes pooled round-trip, driven in-process by t9's Controls 13-15. As of
  * B3 the inference ladder closed BK-01/BK-02, so all thirteen findings are
- * promoted and the todo registry is dormant. t8 is an inert
- * prose marker until the lite-bake-stream devDep and the XP-01/XP-02 pins arrive
- * in B4. t9 now also hosts the error-code inventory gate (Control 9): the
- * thrown (src) vs declared (d.ts) vs pinned (test scan set) censuses must agree.
+ * promoted and the todo registry is dormant. t8 is live against the pinned
+ * published @zakkster/lite-bake-stream@1.6.0 -- it pins the cross-package
+ * contract (F64 lane-width parity cell-for-cell through the Reader.fromBytes
+ * seam, the U32 index-vs-interned-string divergence, the lane-code table
+ * divergence with wire F64=1 the only shared point, an executable wrong-file
+ * honesty pin, and standing export/BYTES/docs drift guards). t8 ignores
+ * BAKE_TORTURE_BREAK entirely; its failability is proven in-process by t9's
+ * Controls 17-23. t9 now also hosts the error-code inventory gate (Control 9):
+ * the thrown (src) vs declared (d.ts) vs pinned (test scan set) censuses must agree.
  *
  * lite-gc-profiler is one-measurement-at-a-time, so tiers run STRICTLY
  * SEQUENTIALLY -- never nested, never concurrent.
@@ -59,7 +64,7 @@ async function main() {
   }
 
   // --- preflight: peers must be installed before any tier is imported --------
-  for (const pkg of ['@zakkster/lite-gc-profiler', '@zakkster/lite-leak']) {
+  for (const pkg of ['@zakkster/lite-gc-profiler', '@zakkster/lite-leak', '@zakkster/lite-bake-stream']) {
     try {
       await import(pkg);
     } catch {

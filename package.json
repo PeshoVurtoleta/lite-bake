@@ -54,6 +54,7 @@
     "node": ">=18.0.0"
   },
   "devDependencies": {
+    "@zakkster/lite-bake-stream": "1.6.0",
     "@zakkster/lite-gc-profiler": "^1.16.0",
     "@zakkster/lite-leak": "^1.10.0"
   },

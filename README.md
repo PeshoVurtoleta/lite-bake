@@ -328,7 +328,7 @@ A string-valued field is non-numeric, so it throws `E_NON_NUMERIC` by default. U
 
 ### Native endianness is used throughout
 
-`bake()` writes with `DataView.setFloat32(..., littleEndian)` where `littleEndian` is detected at module load. Typed-array reads (`f32[i]`) always use native endianness. Round-trips work on both LE (99.99% of hardware) and BE.
+`bake()` writes with `DataView.setFloat32(..., littleEndian)` where `littleEndian` is detected at module load. Typed-array reads (`f32[i]`) always use native endianness. In-process bake-and-read round-trips work on either endianness, but the baked BYTES are **not portable across endianness** and carry no byte-order marker -- a buffer baked on one endianness reads silently wrong on the other. For portable interchange use the little-endian-specified LBK1 container (see [Ecosystem](#ecosystem)).
 
 ### `Reader` field views are lazy only by convention
 
@@ -477,7 +477,7 @@ test('my game: enemy table round-trips', () => {
 If you have one homogeneous numeric column, you should. `lite-bake` is for **heterogeneous records** — mixing floats, ints, and byte-sized flags in one logical row.
 
 **Why interleaved (AoS) instead of columnar (SoA)?**
-Because for game data (spawn points, tile entries, particle seeds) you usually read **most fields of record `i`** per iteration, not one field across all records. AoS gives you one cache line per record. Columnar (SoA) will come in v1.1 for workloads that scan one field at a time.
+Because for game data (spawn points, tile entries, particle seeds) you usually read **most fields of record `i`** per iteration, not one field across all records. AoS gives you one cache line per record. A columnar (SoA) mode is parked until a real workload needs it -- see [Roadmap](#roadmap).
 
 **Does this work in the browser?**
 Yes. Zero Node-specific APIs. Use any bundler, or load directly as ES module.
@@ -486,7 +486,9 @@ Yes. Zero Node-specific APIs. Use any bundler, or load directly as ES module.
 Yes — `baked.buffer` is a raw `ArrayBuffer` that you can `gl.bufferData` directly. But if that's your specific use case, see also `lite-batch-buffer` (sibling library for per-frame interleaved vertex staging).
 
 **Can I serialize the baked buffer to disk?**
-Yes -- write `new Uint8Array(baked.buffer)` to a file and save the metadata alongside it (`JSON.stringify({ stride: baked.stride, count: baked.count, schema: baked.schema })`). Reconstruct with `Reader.fromBytes(readFileSync(file), meta)` -- it honors `byteOffset`, so a pooled `readFileSync` `Buffer` (Node's internal Buffer pool hands back views with a nonzero `byteOffset`) is read correctly, and it copies only when the view does not span its backing buffer. A `serialize()` / `deserialize()` pair (a self-describing container with the schema embedded) is still on the roadmap.
+Yes -- this is the raw exact-layout lane. Write `new Uint8Array(baked.buffer)` to a file and save the metadata alongside it (`JSON.stringify({ stride: baked.stride, count: baked.count, schema: baked.schema })`). Reconstruct with `Reader.fromBytes(readFileSync(file), meta)` -- it honors `byteOffset`, so a pooled `readFileSync` `Buffer` (Node's internal Buffer pool hands back views with a nonzero `byteOffset`) is read correctly, and it copies only when the view does not span its backing buffer.
+
+Two hazards come with the raw lane, both by design. **`Reader.fromBytes` verifies SHAPE, never CONTENT -- there is no magic and no marker, so a wrong file or the wrong `meta` reads back as plausible garbage, silently.** And the bytes are native-endian: they are only portable between same-endianness machines (see the [endianness note](#native-endianness-is-used-throughout)). If you need a self-describing container that *detects* a wrong file (magic at both ends, strict decoding, optional CRC-32C integrity), use the LBK1 format via [`@zakkster/lite-bake-stream`](#ecosystem).
 
 **Is this actually faster than V8's JIT?**
 Yes, but not for the reasons you'd think. V8's object JIT is excellent — so the win isn't in per-access speed, it's in **cache behaviour, consistent allocation, and GC absence**. The hot loop is 2× faster in micro-benchmarks, but the frame-timing consistency is where real games notice the difference.
@@ -495,10 +497,30 @@ Yes, but not for the reasons you'd think. V8's object JIT is excellent — so th
 
 ## Roadmap
 
-- `v1.1`: Optional columnar (SoA) mode for workloads that scan one field at a time.
-- `v1.2`: String table support (per-column interned strings → `U32` index).
-- `v1.3`: `serialize()` / `deserialize()` for shipping baked data to disk or over the wire.
-- `v2.0`: Matrix and normalized-int vertex attributes (for vertex-buffer authoring).
+- **Columnar (SoA) mode:** parked -- its own session when a consumer exists.
+- **String tables:** delegated -- LBK1 `U32` lanes already intern strings per shard (`@zakkster/lite-bake-stream`); see [Ecosystem](#ecosystem).
+- **`serialize()` / `deserialize()`:** resolved by [`decisions/0006-wire-format.md`](decisions/0006-wire-format.md) -- the suite's wire format is LBK1 and lite-bake mints no second one; the raw `Reader.fromBytes` lane remains the exact-layout escape hatch.
+- **Matrix / normalized-int vertex attributes:** parked.
+
+## Ecosystem
+
+`lite-bake` and [`@zakkster/lite-bake-stream`](https://www.npmjs.com/package/@zakkster/lite-bake-stream) share a data model and a torture-pinned boundary. They do different jobs and neither replaces the other.
+
+**Ownership.** The LBK1 container -- the suite's *only* wire format (frozen v1: magic at both ends, strict decoding, optional CRC-32C integrity) -- and its evolution belong to `lite-bake-stream`. The `Types` enum and the in-memory row layout belong here.
+
+**Shared.** The concept of interleaved, fixed-stride typed lanes, and the F64 lane-width row layout: cell-for-cell parity is pinned by torture t8 on **both** sides (each package's own gate), so a byte written into an F64 lane by one is read identically by the other.
+
+**Divergent, pinned as deliberate.** The lane-code tables differ -- wire `lane_kind` F64=1 is the ONLY shared code point; wire U32=3 vs `Types.U32`=5; LBK1 assigns 2/3/4 to F32/U32/U8 where `Types` assigns 2/3/4 to I32/I16/I8. The U32 lane *meaning* differs: in LBK1 it is an index into a per-shard interned string table; here it is a plain number. The lane sets differ: LBK1 v1's numeric lanes are F64-only plus the U32 string index (F32/U8 reserved), while `lite-bake` compiles eight lanes.
+
+**Jobs.** `lite-bake-stream` ingests gigabyte JSON into queryable LBK1 containers (persistence, interchange, range queries). `lite-bake` compiles already-parsed records in memory for the zero-GC hot loop. Neither reads the other's format by API -- t8 pins the boundary so any convergence is a deliberate diff, not drift.
+
+| | `lite-bake` | `@zakkster/lite-bake-stream` |
+| --- | --- | --- |
+| input | in-memory records | gigabyte JSON / NDJSON |
+| output | live in-memory `ArrayBuffer` | LBK1 container (file / wire) |
+| wire format | none (raw `Reader.fromBytes` lane) | LBK1 (magic, strict decode, optional CRC-32C) |
+| U32 lane | plain number | interned string-table index |
+| lane set | eight lanes | F64 + U32 string index (F32/U8 reserved) |
 
 ## License
 

@@ -23,6 +23,10 @@ import { runOpsGate, checkLayout, die, todoIds } from './harness.mjs';
 import { extractThrown, extractDeclared, extractPinned, diffInventory } from './inventory.mjs';
 import { hostileOracle, shapeOracle, crossOracle } from './t5-fuzz.mjs';
 import { checkRefusal, checkBounds, checkRoundTrip } from './t3-adversarial.mjs';
+import {
+  checkLaneParity, checkU32Semantics, checkLaneCodes, checkWrongFile,
+  checkExports, checkBytesTables, checkDocsPins,
+} from './t8-cross.mjs';
 
 const NOOP = function () {};
 
@@ -316,4 +320,84 @@ export function run() {
   let c16GoodErr = null;
   try { bake(c16Good, { schema: c16Schema }); } catch (e) { c16GoodErr = e; }
   if (c16GoodErr) die('t9 control 16: bake refused an in-range corpus (' + c16GoodErr.code + ')');
+
+  // --- Control 17: t8.checkLaneParity. Two identical rows-of-cells agree
+  // (non-vacuity twin returns null); a single divergent cell is caught (teeth).
+  // This is the same Object.is cell comparison t8's F64 lane-parity check uses. --
+  if (checkLaneParity([[1.5, -3.25]], [[1.5, -3.25]]) !== null) {
+    die('t9 control 17: checkLaneParity flagged identical cells (vacuous/broken)');
+  }
+  if (checkLaneParity([[1.5, -3.25]], [[1.5, -3.5]]) === null) {
+    die('t9 control 17: checkLaneParity missed a divergent cell (no teeth)');
+  }
+
+  // --- Control 18: t8.checkU32Semantics. Our side must be a numeric string-table
+  // index and the sibling side a non-empty string (twin returns null); a string
+  // on our side (no numeric index) is caught (teeth). -------------------------
+  if (checkU32Semantics(1, 'zebra') !== null) {
+    die('t9 control 18: checkU32Semantics flagged a valid index/string pair (vacuous/broken)');
+  }
+  if (checkU32Semantics('zebra', 'zebra') === null) {
+    die('t9 control 18: checkU32Semantics accepted a non-numeric our-side cell (no teeth)');
+  }
+
+  // --- Control 19: t8.checkLaneCodes. The pinned table (wire F64=1, U32=3;
+  // Types.F64=1, U32=5) returns null (twin); a converged wire byte (U32=5,
+  // matching Types) is flagged as the deliberate-diff event it must remain (teeth).
+  if (checkLaneCodes({ wireF64: 1, wireU32: 3, typesF64: 1, typesU32: 5 }) !== null) {
+    die('t9 control 19: checkLaneCodes flagged the pinned lane-code table (vacuous/broken)');
+  }
+  if (checkLaneCodes({ wireF64: 1, wireU32: 5, typesF64: 1, typesU32: 5 }) === null) {
+    die('t9 control 19: checkLaneCodes missed a converged wire lane byte (no teeth)');
+  }
+
+  // --- Control 20: t8.checkWrongFile. A misread that differs from the true
+  // corpus proves the hazard is real (twin returns null); identical arrays would
+  // mean accidental interop and falsify the documented hazard, so they are
+  // flagged (teeth). ------------------------------------------------------------
+  if (checkWrongFile([[9, 9]], [[1.5, -3.25]]) !== null) {
+    die('t9 control 20: checkWrongFile flagged a genuinely divergent misread (vacuous/broken)');
+  }
+  if (checkWrongFile([[1.5, -3.25]], [[1.5, -3.25]]) === null) {
+    die('t9 control 20: checkWrongFile accepted an accidental-interop match (no teeth)');
+  }
+
+  // --- Control 21: t8.checkExports. The real three texts agree (twin returns
+  // []); an injected ghost value export in the src text is named (teeth). The
+  // fs reads here reuse Control 9's srcText/dtsText plus the real llms.txt. ------
+  const c21Llms = readFileSync(join(root, 'llms.txt'), 'utf8');
+  if (checkExports(srcText, dtsText, c21Llms).length !== 0) {
+    die('t9 control 21: checkExports flagged the real export surface (vacuous/broken)');
+  }
+  const c21Ghost = checkExports(srcText + '\nexport const Ghost = 1;', dtsText, c21Llms);
+  if (c21Ghost.length === 0 || c21Ghost.join('; ').indexOf('Ghost') === -1) {
+    die('t9 control 21: checkExports did not name an injected ghost export (no teeth)');
+  }
+
+  // --- Control 22: t8.checkBytesTables. The real harness + src BYTES tables
+  // match (twin returns []); a doctored harness text with a mutated element is
+  // flagged (teeth). ------------------------------------------------------------
+  const c22Harness = readFileSync(join(here, 'harness.mjs'), 'utf8');
+  if (checkBytesTables(c22Harness, srcText).length !== 0) {
+    die('t9 control 22: checkBytesTables flagged the real matching BYTES tables (vacuous/broken)');
+  }
+  if (checkBytesTables('const BYTES = [4, 8, 4, 2, 1, 4, 2, 2];', srcText).length === 0) {
+    die('t9 control 22: checkBytesTables missed a mutated BYTES element (no teeth)');
+  }
+
+  // --- Control 23: t8.checkDocsPins. The real README + llms.txt carry every
+  // present-pin and no absent-pin (twin returns []); a README missing the
+  // Ecosystem heading is flagged (presence teeth), and one carrying the stale
+  // roadmap phrase is flagged (absence teeth). ---------------------------------
+  const c23Readme = readFileSync(join(root, 'README.md'), 'utf8');
+  if (checkDocsPins(c23Readme, c21Llms).length !== 0) {
+    die('t9 control 23: checkDocsPins flagged the real docs stanzas (vacuous/broken)');
+  }
+  const c23NoEco = c23Readme.replace('## Ecosystem', '## Elsewhere');
+  if (checkDocsPins(c23NoEco, c21Llms).length === 0) {
+    die('t9 control 23: checkDocsPins missed a README missing the Ecosystem heading (no presence teeth)');
+  }
+  if (checkDocsPins(c23Readme + '\nstill on the roadmap\n', c21Llms).length === 0) {
+    die('t9 control 23: checkDocsPins missed a resurrected stale roadmap phrase (no absence teeth)');
+  }
 }
