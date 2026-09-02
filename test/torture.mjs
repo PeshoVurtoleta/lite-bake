@@ -25,9 +25,12 @@
  * contract (F64 lane-width parity cell-for-cell through the Reader.fromBytes
  * seam, the U32 index-vs-interned-string divergence, the lane-code table
  * divergence with wire F64=1 the only shared point, an executable wrong-file
- * honesty pin, and standing export/BYTES/docs drift guards). t8 ignores
+ * honesty pin, and standing export/BYTES/docs drift guards). t8 also carries the
+ * ASCII-law drift guard (check h): every tracked source, doc, test and decision
+ * reads pure ASCII across the whole tree (U+00D7 and U+00B5 excepted), failing
+ * closed on any unreadable file or empty expected directory. t8 ignores
  * BAKE_TORTURE_BREAK entirely; its failability is proven in-process by t9's
- * Controls 17-23. t9 now also hosts the error-code inventory gate (Control 9):
+ * Controls 17-24. t9 now also hosts the error-code inventory gate (Control 9):
  * the thrown (src) vs declared (d.ts) vs pinned (test scan set) censuses must agree.
  *
  * lite-gc-profiler is one-measurement-at-a-time, so tiers run STRICTLY

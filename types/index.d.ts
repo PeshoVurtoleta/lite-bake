@@ -1,5 +1,5 @@
 /**
- * lite-bake — Compile JSON arrays into flat interleaved binary for zero-GC reads.
+ * lite-bake -- Compile JSON arrays into flat interleaved binary for zero-GC reads.
  */
 
 export type FieldTypeCode = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;

@@ -25,7 +25,7 @@ import { hostileOracle, shapeOracle, crossOracle } from './t5-fuzz.mjs';
 import { checkRefusal, checkBounds, checkRoundTrip } from './t3-adversarial.mjs';
 import {
   checkLaneParity, checkU32Semantics, checkLaneCodes, checkWrongFile,
-  checkExports, checkBytesTables, checkDocsPins,
+  checkExports, checkBytesTables, checkDocsPins, checkAsciiLaw,
 } from './t8-cross.mjs';
 
 const NOOP = function () {};
@@ -399,5 +399,26 @@ export function run() {
   }
   if (checkDocsPins(c23Readme + '\nstill on the roadmap\n', c21Llms).length === 0) {
     die('t9 control 23: checkDocsPins missed a resurrected stale roadmap phrase (no absence teeth)');
+  }
+
+  // --- Control 24: t8.checkAsciiLaw, the standing ASCII drift guard. The real
+  // (ASCII) Bake.js text and the two blessed signs U+00D7/U+00B5 -- built here at
+  // runtime via String.fromCharCode so this file stays pure ASCII -- return []
+  // (non-vacuity twins); a raw em-dash is named with its codepoint (teeth), and a
+  // non-string text fails closed rather than silently passing (fail-closed teeth).
+  if (checkAsciiLaw([{ name: 'clean', text: srcText }]).length !== 0) {
+    die('t9 control 24: checkAsciiLaw flagged the real (ASCII) Bake.js text (vacuous/broken)');
+  }
+  const c24Blessed = 'a' + String.fromCharCode(0xD7) + 'b' + String.fromCharCode(0xB5) + 'c';
+  if (checkAsciiLaw([{ name: 'blessed', text: c24Blessed }]).length !== 0) {
+    die('t9 control 24: checkAsciiLaw flagged the blessed U+00D7/U+00B5 signs (over-strict)');
+  }
+  const c24Dash = 'lite-bake ' + String.fromCharCode(0x2014) + ' tagline';
+  const c24Teeth = checkAsciiLaw([{ name: 'dashy', text: c24Dash }]);
+  if (c24Teeth.length === 0 || c24Teeth.join('; ').indexOf('U+2014') === -1) {
+    die('t9 control 24: checkAsciiLaw did not name a raw em-dash as U+2014 (no teeth)');
+  }
+  if (checkAsciiLaw([{ name: 'nulltext', text: null }]).length === 0) {
+    die('t9 control 24: checkAsciiLaw did not fail closed on a non-string text');
   }
 }

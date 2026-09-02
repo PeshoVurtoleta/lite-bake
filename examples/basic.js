@@ -1,5 +1,5 @@
 /**
- * lite-bake — canonical example: baking a spawn-point table for a shooter.
+ * lite-bake -- canonical example: baking a spawn-point table for a shooter.
  *
  * Run with: `node examples/basic.js`
  *
@@ -24,8 +24,9 @@ const spawnPoints = [
 
 // --- Bake once at load time ------------------------------------------------
 
-// For pixel-perfect x/y you'll usually want F32. Inference would pick U16 for
-// these small positive ints, which would silently round. Override explicitly.
+// Inference would pick U16 for these small positive ints and store them exactly.
+// The F32 override is here so fractional pixel coordinates keep working, the f32
+// hot lane exists, and the layout stays stable as the values change over time.
 const baked = bake(spawnPoints, {
     schema: {x: Types.F32, y: Types.F32},
     validate: true,                              // dev: catch missing/extra keys
@@ -52,7 +53,7 @@ const OFF_TYPE = r.offsetU8('type');
 const OFF_HP = r.offsetU8('hp');
 const OFF_WAVE = r.offsetU8('wave');
 
-// --- Hot loop — ZERO allocations -------------------------------------------
+// --- Hot loop -- ZERO allocations -------------------------------------------
 
 let spawned = 0;
 const currentWave = 2;

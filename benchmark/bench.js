@@ -3,7 +3,7 @@
  *
  * Run with: `node benchmark/bench.js`
  *
- * IMPORTANT — READ THIS BEFORE CITING NUMBERS:
+ * IMPORTANT -- READ THIS BEFORE CITING NUMBERS:
  *
  * V8's JIT is *extremely* good at monomorphic object access. When every
  * record has the same hidden class and the dataset fits in L2, object
@@ -143,9 +143,9 @@ const totalOps = LOOPS * N;
 const obj = stats(objTimes);
 const bkd = stats(bakedTimes);
 
-console.log('HOT-LOOP THROUGHPUT — 5 trials, median (min–max)');
-console.log(`  Object access: median ${obj.median.toFixed(2)} ms   (${format(totalOps / (obj.median / 1000))})   range ${obj.min.toFixed(1)}–${obj.max.toFixed(1)} ms`);
-console.log(`  Baked access:  median ${bkd.median.toFixed(2)} ms   (${format(totalOps / (bkd.median / 1000))})   range ${bkd.min.toFixed(1)}–${bkd.max.toFixed(1)} ms`);
+console.log('HOT-LOOP THROUGHPUT -- 5 trials, median (min-max)');
+console.log(`  Object access: median ${obj.median.toFixed(2)} ms   (${format(totalOps / (obj.median / 1000))})   range ${obj.min.toFixed(1)}-${obj.max.toFixed(1)} ms`);
+console.log(`  Baked access:  median ${bkd.median.toFixed(2)} ms   (${format(totalOps / (bkd.median / 1000))})   range ${bkd.min.toFixed(1)}-${bkd.max.toFixed(1)} ms`);
 console.log(`  Median speedup:   ${(obj.median / bkd.median).toFixed(2)}×`);
 console.log(`  Object variance:  ${((obj.max - obj.min) / obj.median * 100).toFixed(0)}%`);
 console.log(`  Baked variance:   ${((bkd.max - bkd.min) / bkd.median * 100).toFixed(0)}%`);

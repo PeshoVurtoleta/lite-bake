@@ -22,6 +22,9 @@
  *                         each present in llms.txt and the d.ts (value exports).
  *   f  BYTES DRIFT     -- the BYTES table duplicated in harness.mjs vs src.
  *   g  DOCS PINS       -- the README/llms.txt ecosystem stanzas exist as written.
+ *   h  ASCII LAW       -- the standing drift guard: every tracked source, doc,
+ *                         test and decision reads pure ASCII (U+00D7 and U+00B5
+ *                         excepted); a failed read or empty dir fails closed.
  *
  * DETERMINISM: fixed corpus, no PRNG anywhere in this file. IGNORES-BREAK: t8
  * does not import BAKE_TORTURE_BREAK and never consults it -- proving t8 itself
@@ -38,7 +41,7 @@
  * @license MIT
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { die } from './harness.mjs';
@@ -241,6 +244,41 @@ export function checkDocsPins(readmeText, llmsText) {
   return out;
 }
 
+/**
+ * checkAsciiLaw(entries) -> array of violation strings. entries is
+ * [{ name, text }]. Flags every character whose code unit is > 0x7E, or is a
+ * control below 0x20 that is not TAB/LF/CR, EXCEPT the two suite-blessed signs
+ * 0xD7 (multiplication) and 0xB5 (micro). Each violation names the entry, the
+ * 1-based line, and the codepoint as 'U+' + hex. All comparisons are numeric
+ * (charCodeAt) so this file carries no non-ASCII literal of its own. A missing
+ * text (typeof !== string) is itself one violation: fail closed, never skip.
+ */
+export function checkAsciiLaw(entries) {
+  const out = [];
+  const ALLOW_MUL = 0xD7;   // multiplication sign
+  const ALLOW_MICRO = 0xB5; // micro sign
+  const TAB = 0x09, LF = 0x0A, CR = 0x0D, LOW = 0x20, HIGH = 0x7E;
+  for (let e = 0; e < entries.length; e++) {
+    const name = entries[e].name;
+    const text = entries[e].text;
+    if (typeof text !== 'string') {
+      out.push(name + ': unreadable (no text)');
+      continue;
+    }
+    let line = 1;
+    for (let i = 0; i < text.length; i++) {
+      const c = text.charCodeAt(i);
+      if (c === LF) { line++; continue; }
+      const controlBad = c < LOW && c !== TAB && c !== CR;
+      const highBad = c > HIGH && c !== ALLOW_MUL && c !== ALLOW_MICRO;
+      if (controlBad || highBad) {
+        out.push(name + ' line ' + line + ': U+' + c.toString(16).toUpperCase());
+      }
+    }
+  }
+  return out;
+}
+
 /* -------------------------------------------------------------------------- *
  * Vendored LBK1 parser. Frozen format_version 1; a local helper so t8 pins the
  * wire bytes directly and never greps the sibling's SPEC/prose.
@@ -408,4 +446,45 @@ export async function run() {
   const readmeText = readFileSync(join(root, 'README.md'), 'utf8');
   const gViol = checkDocsPins(readmeText, llmsText);
   if (gViol.length !== 0) die('t8 check g (docs pins): ' + gViol.join('; '));
+
+  // 10. ASCII-LAW DRIFT GUARD (check h). Fresh reads of the whole tracked tree.
+  // A failed read or an empty expected directory is itself a violation: this
+  // guard fails closed and never silently skips a file it was told to police.
+  const asciiEntries = [];
+  const hViol = [];
+  const addFile = (abs, label) => {
+    let text;
+    try { text = readFileSync(abs, 'utf8'); }
+    catch (err) {
+      hViol.push(label + ': unreadable (' + (err && err.code ? err.code : 'read failed') + ')');
+      return;
+    }
+    asciiEntries.push({ name: label, text });
+  };
+  const addDir = (absDir, relLabel, ext) => {
+    let names;
+    try { names = readdirSync(absDir); }
+    catch (err) { hViol.push(relLabel + ': directory unreadable'); return; }
+    const matched = names.filter((n) => n.endsWith(ext)).sort();
+    if (matched.length === 0) { hViol.push(relLabel + ': expected ' + ext + ' files, found none'); return; }
+    for (let i = 0; i < matched.length; i++) {
+      addFile(join(absDir, matched[i]), relLabel + '/' + matched[i]);
+    }
+  };
+  addFile(join(root, 'Bake.js'), 'Bake.js');
+  addFile(join(root, 'types', 'index.d.ts'), 'types/index.d.ts');
+  addFile(join(root, 'llms.txt'), 'llms.txt');
+  addFile(join(root, 'README.md'), 'README.md');
+  addFile(join(root, 'CHANGELOG.md'), 'CHANGELOG.md');
+  addFile(join(root, 'package.json'), 'package.json');
+  addFile(join(root, 'LICENSE'), 'LICENSE');
+  addFile(join(root, 'examples', 'basic.js'), 'examples/basic.js');
+  addFile(join(root, 'benchmark', 'bench.js'), 'benchmark/bench.js');
+  addDir(join(root, 'test'), 'test', '.test.js');
+  addFile(join(root, 'test', 'torture.mjs'), 'test/torture.mjs');
+  addDir(here, 'test/torture', '.mjs');
+  addDir(join(root, 'decisions'), 'decisions', '.md');
+  const aViol = checkAsciiLaw(asciiEntries);
+  for (let i = 0; i < aViol.length; i++) hViol.push(aViol[i]);
+  if (hViol.length !== 0) die('t8 check h (ascii law): ' + hViol.join('; '));
 }

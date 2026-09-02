@@ -1,11 +1,11 @@
 /**
- * lite-bake test suite — uses Node's built-in `node:test` runner.
+ * lite-bake test suite -- uses Node's built-in `node:test` runner.
  * Run with: `npm test` (requires Node >= 18).
  *
  * These tests prove three things:
- *   1. Correctness  — bake() then Reader reads back the input faithfully
- *   2. Safety       — edge inputs throw predictably, never silently corrupt
- *   3. Layout       — stride/alignment math matches the contract in README.md
+ *   1. Correctness  -- bake() then Reader reads back the input faithfully
+ *   2. Safety       -- edge inputs throw predictably, never silently corrupt
+ *   3. Layout       -- stride/alignment math matches the contract in README.md
  */
 
 import { test, describe } from 'node:test';
@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import { bake, Reader, Types } from '../Bake.js';
 
 // ============================================================================
-// GROUP 1 — Input validation
+// GROUP 1 -- Input validation
 // ============================================================================
 
 describe('bake() input validation', () => {
@@ -40,7 +40,7 @@ describe('bake() input validation', () => {
 });
 
 // ============================================================================
-// GROUP 2 — Type inference (smallest-fitting int, float fallback)
+// GROUP 2 -- Type inference (smallest-fitting int, float fallback)
 // ============================================================================
 
 describe('type inference', () => {
@@ -49,31 +49,31 @@ describe('type inference', () => {
     return b.schema.find(f => f.name === key).type;
   };
 
-  test('all small non-negative ints → U8', () => {
+  test('all small non-negative ints -> U8', () => {
     assert.equal(pickType([{v:0},{v:255},{v:128}], 'v'), Types.U8);
   });
 
-  test('U8 → U16 boundary at 256', () => {
+  test('U8 -> U16 boundary at 256', () => {
     assert.equal(pickType([{v:0},{v:256}], 'v'), Types.U16);
   });
 
-  test('U16 → U32 boundary at 65536', () => {
+  test('U16 -> U32 boundary at 65536', () => {
     assert.equal(pickType([{v:0},{v:65536}], 'v'), Types.U32);
   });
 
-  test('negative in range → I8', () => {
+  test('negative in range -> I8', () => {
     assert.equal(pickType([{v:-128},{v:127}], 'v'), Types.I8);
   });
 
-  test('I8 → I16 boundary at -129', () => {
+  test('I8 -> I16 boundary at -129', () => {
     assert.equal(pickType([{v:-129},{v:0}], 'v'), Types.I16);
   });
 
-  test('I16 → I32 boundary at -32769', () => {
+  test('I16 -> I32 boundary at -32769', () => {
     assert.equal(pickType([{v:-32769},{v:0}], 'v'), Types.I32);
   });
 
-  test('any fractional value → F32', () => {
+  test('any fractional value -> F32', () => {
     assert.equal(pickType([{v:1},{v:1.5}], 'v'), Types.F32);
   });
 
@@ -102,7 +102,7 @@ describe('type inference', () => {
 });
 
 // ============================================================================
-// GROUP 3 — Round-trip correctness (bake → read back)
+// GROUP 3 -- Round-trip correctness (bake -> read back)
 // ============================================================================
 
 describe('round-trip correctness', () => {
@@ -136,7 +136,7 @@ describe('round-trip correctness', () => {
   });
 
   test('F64 round-trip (tests stride alignment!)', () => {
-    // F64 (8) + U32 (4) → stride must pad to 8, not 4.
+    // F64 (8) + U32 (4) -> stride must pad to 8, not 4.
     const records = [
       { bigFloat: Math.PI,    tag: 1 },
       { bigFloat: Math.E,     tag: 2 },
@@ -188,7 +188,7 @@ describe('round-trip correctness', () => {
 });
 
 // ============================================================================
-// GROUP 4 — Layout & alignment
+// GROUP 4 -- Layout & alignment
 // ============================================================================
 
 describe('layout and alignment', () => {
@@ -214,7 +214,7 @@ describe('layout and alignment', () => {
   });
 
   test('stride is padded to max field alignment', () => {
-    // F64 + U8 → natural end is 9, must pad to 16.
+    // F64 + U8 -> natural end is 9, must pad to 16.
     const b = bake(
       [{ big: 1.5, tag: 1 }],
       { schema: { big: Types.F64, tag: Types.U8 } }
@@ -234,7 +234,7 @@ describe('layout and alignment', () => {
 });
 
 // ============================================================================
-// GROUP 5 — Schema overrides
+// GROUP 5 -- Schema overrides
 // ============================================================================
 
 describe('schema overrides', () => {
@@ -258,7 +258,7 @@ describe('schema overrides', () => {
 });
 
 // ============================================================================
-// GROUP 6 — Validate mode
+// GROUP 6 -- Validate mode
 // ============================================================================
 
 describe('opts.validate', () => {
@@ -292,7 +292,7 @@ describe('opts.validate', () => {
 });
 
 // ============================================================================
-// GROUP 7 — Reader offset helpers & type checks
+// GROUP 7 -- Reader offset helpers & type checks
 // ============================================================================
 
 describe('Reader offset helpers', () => {
@@ -342,7 +342,7 @@ describe('Reader offset helpers', () => {
 });
 
 // ============================================================================
-// GROUP 8 — Hot-loop pattern smoke test
+// GROUP 8 -- Hot-loop pattern smoke test
 // ============================================================================
 
 describe('hot-loop pattern (integration)', () => {

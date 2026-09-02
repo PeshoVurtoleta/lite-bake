@@ -1,5 +1,5 @@
 /**
- * lite-bake — Compile JSON arrays into flat interleaved binary for zero-GC reads.
+ * lite-bake -- Compile JSON arrays into flat interleaved binary for zero-GC reads.
  *
  * Workflow:
  *   const baked = bake(records, { validate: true });   // init-time; validate optional
@@ -19,7 +19,7 @@
  *   }
  *
  * Notes:
- *   - Stride is padded to the LARGEST field alignment (F64 → 8, F32/I32 → 4, …).
+ *   - Stride is padded to the LARGEST field alignment (F64 -> 8, F32/I32 -> 4, ...).
  *     This keeps `i * strideF64 + off` arithmetic consistent across records.
  *   - DataView writes use the platform's native endianness, matching the endianness
  *     that TypedArrays read with. Round-trip works on LE (99.99%) and BE alike.
@@ -300,13 +300,13 @@ export function bake(records, opts = {}) {
     f.offset = stride;
     stride += sz;
   }
-  // Pad total stride to max field alignment — keeps record N's fields correctly
+  // Pad total stride to max field alignment -- keeps record N's fields correctly
   // aligned under `i * stride + offset` AND keeps strideF64/strideF32 exact.
   stride = (stride + maxAlign - 1) & ~(maxAlign - 1);
 
   // Pad total buffer size up to a multiple of 8 so Float64Array view is always
-  // constructible, even when the schema has no F64 field. Costs 0–7 unused
-  // trailing bytes per baked dataset — negligible.
+  // constructible, even when the schema has no F64 field. Costs 0-7 unused
+  // trailing bytes per baked dataset -- negligible.
   const rawBytes = stride * records.length;
   const paddedBytes = (rawBytes + 7) & ~7;
   const ab = new ArrayBuffer(paddedBytes);
